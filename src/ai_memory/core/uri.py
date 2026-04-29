@@ -17,6 +17,8 @@ def parse_memory_uri(uri: str) -> ParsedMemoryUri:
     parsed = urlparse(uri)
     if parsed.scheme not in SUPPORTED_NAMESPACES:
         raise ValueError(f"Unsupported memory namespace: {parsed.scheme}")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Memory URI must not include query or fragment")
     if not parsed.netloc and parsed.scheme != "system":
         raise ValueError(f"Memory URI requires an authority: {uri}")
     path_parts = tuple(part for part in parsed.path.split("/") if part)
