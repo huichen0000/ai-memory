@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from ai_memory.core.models import MemoryCandidate, new_id, utc_now_iso
 
 ReviewStatus = Literal["pending", "approved", "rejected"]
+VALID_REVIEW_STATUSES = {"pending", "approved", "rejected"}
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class ReviewQueue:
         return [item for item in self._read_all() if item.status == "pending"]
 
     def mark(self, review_id: str, status: ReviewStatus) -> None:
+        status = self._validate_status(status)
         items = []
         found = False
         for item in self._read_all():
@@ -65,7 +68,10 @@ class ReviewQueue:
     def _write_all(self, items: list[ReviewItem]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         content = "".join(json.dumps(self._item_to_dict(item), ensure_ascii=False) + "\n" for item in items)
-        self.path.write_text(content, encoding="utf-8")
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=self.path.parent, delete=False) as handle:
+            handle.write(content)
+            temp_path = Path(handle.name)
+        temp_path.replace(self.path)
 
     def _item_to_dict(self, item: ReviewItem) -> dict[str, object]:
         data = asdict(item)
@@ -82,7 +88,12 @@ class ReviewQueue:
             id=str(data["id"]),
             candidate=MemoryCandidate(**candidate_data),
             reason=str(data["reason"]),
-            status=data["status"],
+            status=self._validate_status(data["status"]),
             created_at=str(data["created_at"]),
             reviewed_at=data.get("reviewed_at"),
         )
+
+    def _validate_status(self, status: object) -> ReviewStatus:
+        if status not in VALID_REVIEW_STATUSES:
+            raise ValueError(f"Invalid review status: {status}")
+        return cast(ReviewStatus, status)

@@ -15,11 +15,11 @@ SENSITIVE_PARTS = {".ssh", ".aws"}
 
 
 def is_sensitive_path(path: Path) -> bool:
-    name = path.name
+    name = path.name.lower()
     if name in SENSITIVE_NAMES:
         return True
     if name.startswith(".env."):
         return True
-    if path.suffix in SENSITIVE_SUFFIXES:
+    if path.suffix.lower() in SENSITIVE_SUFFIXES:
         return True
-    return any(part in SENSITIVE_PARTS for part in path.parts)
+    return any(part.lower() in SENSITIVE_PARTS for part in path.parts)

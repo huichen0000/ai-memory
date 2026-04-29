@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-BEARER_RE = re.compile(r"Bearer\s+[A-Za-z0-9._\-]+")
+BEARER_RE = re.compile(r"Bearer\s+[^\s]+")
 DATABASE_URL_RE = re.compile(r"(postgres(?:ql)?://[^:\s]+):([^@\s]+)@")
 API_KEY_RE = re.compile(r"(?i)(api[_-]?key\s*[=:]\s*)([^\s]+)")
 PASSWORD_RE = re.compile(r"(?i)(password\s*[=:]\s*)([^\s]+)")
