@@ -1,0 +1,11 @@
+.worktrees
+.worktrees/
+worktrees
+worktrees/
+.omc
+.omc/
+.claude/settings.local.json
+__pycache__/
+.pytest_cache/
+*.pyc
+.venv/
