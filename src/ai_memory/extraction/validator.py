@@ -13,5 +13,15 @@ def validate_candidate(candidate: MemoryCandidate) -> None:
         raise ValueError("candidate evidence is required")
     if not 0 <= candidate.confidence <= 1:
         raise ValueError("candidate confidence must be between 0 and 1")
-    if redact_secrets(candidate.content) != candidate.content:
-        raise ValueError("candidate content contains sensitive material")
+    _reject_sensitive_text("content", candidate.content)
+    _reject_sensitive_text("summary", candidate.summary)
+    _reject_sensitive_text("evidence", candidate.evidence)
+    for tag in candidate.tags:
+        _reject_sensitive_text("tags", tag)
+    for trigger in candidate.triggers:
+        _reject_sensitive_text("triggers", trigger)
+
+
+def _reject_sensitive_text(field: str, value: str) -> None:
+    if redact_secrets(value) != value:
+        raise ValueError(f"candidate {field} contains sensitive material")

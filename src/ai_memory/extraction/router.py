@@ -12,13 +12,15 @@ def route_candidates(
     store: SQLiteMemoryStore,
     queue: ReviewQueue,
     auto_write_confidence: float,
-) -> dict[str, int]:
-    counts = {"auto_approved": 0, "queued": 0, "discarded": 0}
+) -> dict[str, object]:
+    counts: dict[str, object] = {"auto_approved": 0, "queued": 0, "discarded": 0}
+    errors = []
     for candidate in candidates:
         try:
             validate_candidate(candidate)
-        except ValueError:
+        except ValueError as exc:
             counts["discarded"] += 1
+            errors.append(str(exc))
             continue
         decision = route_candidate(candidate, auto_write_confidence)
         if decision.action == "auto_write":
@@ -29,4 +31,6 @@ def route_candidates(
             counts["queued"] += 1
         else:
             counts["discarded"] += 1
+    if errors:
+        counts["errors"] = errors
     return counts
