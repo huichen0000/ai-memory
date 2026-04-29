@@ -5,7 +5,7 @@ from ai_memory.core.models import MemoryRecord
 
 def assemble_context(records: list[MemoryRecord], title: str = "Retrieved Memory") -> str:
     if not records:
-        return f"# {title}\n\n_No relevant memory found._"
+        return f"# {title}\n\n_No relevant approved memory found._"
 
     sections = [f"# {title}"]
     for record in records:

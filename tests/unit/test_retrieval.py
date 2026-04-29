@@ -15,6 +15,12 @@ def test_detect_environment_without_git(tmp_path: Path):
     assert env["repo_id"].startswith("local/")
 
 
+def test_assemble_context_empty_records_mentions_approved_memory():
+    context = assemble_context([], title="Retrieved Memory")
+
+    assert "No relevant approved memory found" in context
+
+
 def test_assemble_context_groups_memories(tmp_path: Path):
     store = SQLiteMemoryStore(tmp_path / "memory.db")
     store.initialize()
