@@ -72,6 +72,10 @@ def build_parser() -> argparse.ArgumentParser:
     context_parser.add_argument("--format", choices=("markdown", "hook-json"), default="markdown")
     context_parser.add_argument("--event", default="SessionStart")
 
+    mcp_parser = subparsers.add_parser("mcp", help="Run MCP server commands")
+    mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
+    mcp_subparsers.add_parser("serve", help="Serve ai-memory MCP tools")
+
     return parser
 
 
@@ -122,6 +126,12 @@ def run(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(hook_json(args.event, context)))
         else:
             print(context)
+        return 0
+
+    if args.command == "mcp" and args.mcp_command == "serve":
+        from ai_memory.mcp.server import main as mcp_main
+
+        mcp_main()
         return 0
 
     parser.error(f"Unknown command: {args.command}")
