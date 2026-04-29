@@ -2,23 +2,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import sqlite3
 from pathlib import Path
 from typing import Sequence
 
 from ai_memory.core.config import init_home
 from ai_memory.core.models import MemoryCandidate, MemoryRecord
 from ai_memory.retrieval.assembler import assemble_context, hook_json
-from ai_memory.retrieval.environment import detect_environment
 from ai_memory.retrieval.ranking import rank_records
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
 
 def _tokenize(value: str) -> tuple[str, ...]:
     seen: list[str] = []
-    for token in value.lower().split():
-        cleaned = token.strip()
-        if cleaned and cleaned not in seen:
-            seen.append(cleaned)
+    for token in re.findall(r"[a-z0-9_-]+", value.lower()):
+        if token not in seen:
+            seen.append(token)
     return tuple(seen)
 
 
@@ -35,12 +35,16 @@ def _search_records(store: SQLiteMemoryStore, query: str, limit: int) -> list[Me
     tokens = _tokenize(query)
     seen: set[str] = set()
     records: list[MemoryRecord] = []
-    for token in tokens or (query.strip(),):
-        for record in store.search(token, limit=limit):
+    for token in tokens:
+        try:
+            matches = store.search(token, limit=limit)
+        except sqlite3.OperationalError:
+            continue
+        for record in matches:
             if record.id not in seen:
                 seen.add(record.id)
                 records.append(record)
-    return records
+    return records[:limit]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,14 +116,12 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "context":
         store, config = _init_store(args.home)
-        env = detect_environment(args.home, client="generic", prompt=args.prompt)
-        records = rank_records(_search_records(store, args.prompt, config.retrieval_max_items))
+        records = rank_records(_search_records(store, args.prompt, config.retrieval_max_items))[: config.retrieval_max_items]
         context = assemble_context(records)
         if args.format == "hook-json":
             print(json.dumps(hook_json(args.event, context)))
         else:
             print(context)
-        _ = env
         return 0
 
     parser.error(f"Unknown command: {args.command}")

@@ -32,7 +32,7 @@ def _repo_id_from_remote(remote: str) -> str:
         normalized = f"{host}/{path}"
     elif "://" in remote:
         parsed = urlparse(remote)
-        normalized = f"{parsed.netloc}{parsed.path}"
+        normalized = f"{parsed.hostname or ''}{parsed.path}"
     else:
         normalized = remote.replace("\\", "/")
     normalized = normalized.strip().rstrip("/")
