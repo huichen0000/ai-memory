@@ -20,7 +20,6 @@ dev = [
 
 [project.scripts]
 ai-memory = "ai_memory.cli.main:main"
-aiwrap = "ai_memory.wrappers.aiwrap:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
