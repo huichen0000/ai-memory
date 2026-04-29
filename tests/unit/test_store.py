@@ -46,7 +46,7 @@ def test_create_memory_persists_record_source_version_and_fts(tmp_path: Path):
     assert [item.id for item in results] == [record.id]
 
 
-def test_update_memory_creates_new_version(tmp_path: Path):
+def test_update_memory_creates_new_version_and_refreshes_search_index(tmp_path: Path):
     store = SQLiteMemoryStore(tmp_path / "memory.db")
     store.initialize()
     record = store.create_memory(make_candidate(), status="auto_approved", change_reason="test insert")
@@ -54,5 +54,10 @@ def test_update_memory_creates_new_version(tmp_path: Path):
     updated = store.update_memory(record.id, "Use pnpm test -- --runInBand for tests.", "command refined")
 
     assert updated.content == "Use pnpm test -- --runInBand for tests."
+    loaded = store.get_memory(record.id)
+    assert loaded is not None
+    assert loaded.content == "Use pnpm test -- --runInBand for tests."
     versions = store.list_versions(record.id)
     assert [version["version"] for version in versions] == [1, 2]
+    results = store.search("runInBand", limit=5)
+    assert [item.id for item in results] == [record.id]

@@ -110,7 +110,10 @@ class SQLiteMemoryStore:
         with self.connect() as db:
             db.execute(
                 """
-                INSERT INTO memories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO memories (
+                    id, uri, type, scope, content, summary, status, confidence, risk,
+                    repo_id, branch, path_glob, expires_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -131,7 +134,11 @@ class SQLiteMemoryStore:
                 ),
             )
             db.execute(
-                "INSERT INTO memory_sources VALUES (?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO memory_sources (
+                    id, memory_id, client, session_id, transcript_ref, evidence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     new_id("src"),
                     memory_id,
@@ -143,7 +150,11 @@ class SQLiteMemoryStore:
                 ),
             )
             db.execute(
-                "INSERT INTO memory_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO memory_versions (
+                    id, memory_id, version, content, summary, status, changed_by, change_reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (new_id("ver"), memory_id, 1, record.content, record.summary, record.status, "ai-memory", change_reason, now),
             )
             self._replace_tags(db, memory_id, candidate.tags)
@@ -157,18 +168,23 @@ class SQLiteMemoryStore:
         return self._record_from_row(row) if row else None
 
     def update_memory(self, memory_id: str, content: str, change_reason: str) -> MemoryRecord:
-        existing = self.get_memory(memory_id)
-        if existing is None:
-            raise ValueError(f"Unknown memory id: {memory_id}")
         now = utc_now_iso()
         with self.connect() as db:
+            existing_row = db.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            if existing_row is None:
+                raise ValueError(f"Unknown memory id: {memory_id}")
+            existing = self._record_from_row(existing_row)
             current_version = db.execute(
                 "SELECT COALESCE(MAX(version), 0) FROM memory_versions WHERE memory_id = ?",
                 (memory_id,),
             ).fetchone()[0]
             db.execute("UPDATE memories SET content = ?, updated_at = ? WHERE id = ?", (content, now, memory_id))
             db.execute(
-                "INSERT INTO memory_versions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                """
+                INSERT INTO memory_versions (
+                    id, memory_id, version, content, summary, status, changed_by, change_reason, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
                 (
                     new_id("ver"),
                     memory_id,
@@ -181,16 +197,14 @@ class SQLiteMemoryStore:
                     now,
                 ),
             )
-            updated = self.get_memory(memory_id)
-            if updated is None:
+            updated_row = db.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            if updated_row is None:
                 raise ValueError(f"Memory disappeared during update: {memory_id}")
+            updated = self._record_from_row(updated_row)
             tags = [row["tag"] for row in db.execute("SELECT tag FROM memory_tags WHERE memory_id = ?", (memory_id,))]
             triggers = [row["trigger"] for row in db.execute("SELECT trigger FROM memory_triggers WHERE memory_id = ?", (memory_id,))]
             self._replace_fts(db, updated, tags, triggers)
-        refreshed = self.get_memory(memory_id)
-        if refreshed is None:
-            raise ValueError(f"Memory disappeared after update: {memory_id}")
-        return refreshed
+            return updated
 
     def search(self, query: str, limit: int) -> list[MemoryRecord]:
         with self.connect() as db:
@@ -219,11 +233,11 @@ class SQLiteMemoryStore:
 
     def _replace_tags(self, db: sqlite3.Connection, memory_id: str, tags: tuple[str, ...]) -> None:
         db.execute("DELETE FROM memory_tags WHERE memory_id = ?", (memory_id,))
-        db.executemany("INSERT INTO memory_tags VALUES (?, ?)", [(memory_id, tag) for tag in tags])
+        db.executemany("INSERT INTO memory_tags (memory_id, tag) VALUES (?, ?)", [(memory_id, tag) for tag in tags])
 
     def _replace_triggers(self, db: sqlite3.Connection, memory_id: str, triggers: tuple[str, ...]) -> None:
         db.execute("DELETE FROM memory_triggers WHERE memory_id = ?", (memory_id,))
-        db.executemany("INSERT INTO memory_triggers VALUES (?, ?)", [(memory_id, trigger) for trigger in triggers])
+        db.executemany("INSERT INTO memory_triggers (memory_id, trigger) VALUES (?, ?)", [(memory_id, trigger) for trigger in triggers])
 
     def _replace_fts(
         self,
@@ -234,7 +248,10 @@ class SQLiteMemoryStore:
     ) -> None:
         db.execute("DELETE FROM memory_fts WHERE memory_id = ?", (record.id,))
         db.execute(
-            "INSERT INTO memory_fts VALUES (?, ?, ?, ?, ?, ?)",
+            """
+            INSERT INTO memory_fts (memory_id, uri, content, summary, tags, triggers)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
             (record.id, record.uri, record.content, record.summary, " ".join(tags), " ".join(triggers)),
         )
 
