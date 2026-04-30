@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import yaml
 
@@ -15,7 +15,7 @@ class AppConfig:
     log_dir: Path
     review_queue_path: Path
     extractor_provider: str | None
-    extractor_command: str | None
+    extractor_command: str | Sequence[str] | None
     max_input_chars: int
     retrieval_max_items: int
     retrieval_max_chars: int
@@ -99,6 +99,14 @@ def _resolve_config_path(home: Path, value: object, default: Path) -> Path:
     return path if path.is_absolute() else home / path
 
 
+def _resolve_extractor_command(value: object, default: str | Sequence[str] | None) -> str | Sequence[str] | None:
+    if isinstance(value, str) and value.strip():
+        return value
+    if isinstance(value, list) and all(isinstance(item, str) and item for item in value):
+        return value
+    return default
+
+
 def _ensure_home_artifacts(config: AppConfig) -> None:
     config.home.mkdir(parents=True, exist_ok=True)
     config.raw_dir.mkdir(parents=True, exist_ok=True)
@@ -130,7 +138,7 @@ def load_config(home: Path) -> AppConfig:
         log_dir=_resolve_config_path(home, paths.get("log_dir"), defaults.log_dir),
         review_queue_path=_resolve_config_path(home, paths.get("review_queue"), defaults.review_queue_path),
         extractor_provider=extractor.get("provider") if isinstance(extractor.get("provider"), str) else defaults.extractor_provider,
-        extractor_command=extractor.get("command") if isinstance(extractor.get("command"), str) else defaults.extractor_command,
+        extractor_command=_resolve_extractor_command(extractor.get("command"), defaults.extractor_command),
         max_input_chars=int(extractor.get("max_input_chars", defaults.max_input_chars)),
         retrieval_max_items=int(retrieval.get("max_items", defaults.retrieval_max_items)),
         retrieval_max_chars=int(retrieval.get("max_chars", defaults.retrieval_max_chars)),

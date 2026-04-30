@@ -208,7 +208,13 @@ ai-memory context --format hook-json --event SessionStart
 }
 ```
 
-注意：当前 MVP 只提供 hook JSON 输出能力，不会自动修改 Claude Code settings 或自动安装 hook。实际自动接入需要用户手动配置对应工具的 hook。
+如果你使用 ccswitch，建议不要让工具直接改 `settings.json`，避免被 profile 切换覆盖。使用下面的集成命令生成可复制片段，再放到 ccswitch 当前管理的 Claude Code profile/settings，或通过 Claude Code `/hooks` UI 手动粘贴：
+
+```bash
+ai-memory integrate install claude-code
+```
+
+它只打印 `SessionStart` 和 `UserPromptSubmit` hook 片段，不会修改任何 settings 文件。
 
 ## 6. Review Queue
 

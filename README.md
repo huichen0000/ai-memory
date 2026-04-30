@@ -85,6 +85,29 @@ ai-memory approve rev_example
 ai-memory reject rev_example
 ```
 
+## Transparent integrations
+
+Generate ccswitch-safe Claude Code hook snippets without modifying `settings.json`:
+
+```bash
+ai-memory integrate install claude-code
+```
+
+The snippet includes `SessionStart` and `UserPromptSubmit` hooks that call `ai-memory context` and inject approved memory. Paste it into the active Claude Code profile/settings managed by ccswitch, or through Claude Code's `/hooks` UI.
+
+For Codex or Gemini, use the wrapper so approved memory is prepended automatically:
+
+```bash
+aiwrap codex -- "fix tests"
+aiwrap gemini -- "review this module"
+```
+
+Check available integration modes:
+
+```bash
+ai-memory integrate status
+```
+
 ## MCP server
 
 ```bash

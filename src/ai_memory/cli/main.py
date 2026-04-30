@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -24,7 +25,7 @@ def _tokenize(value: str) -> tuple[str, ...]:
 
 
 def _init_store(home: Path) -> tuple[SQLiteMemoryStore, object]:
-    config = init_home(home)
+    config = load_config(home)
     store = SQLiteMemoryStore(config.store_path)
     store.initialize()
     return store, config
@@ -101,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     context_parser = subparsers.add_parser("context", help="Build retrieval context")
     context_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
     context_parser.add_argument("--prompt", default="memory")
+    context_parser.add_argument("--stdin-json-prompt", action="store_true")
     context_parser.add_argument("--format", choices=("markdown", "hook-json"), default="markdown")
     context_parser.add_argument("--event", default="SessionStart")
 
@@ -140,6 +142,14 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server commands")
     mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
     mcp_subparsers.add_parser("serve", help="Serve ai-memory MCP tools")
+
+    integrate_parser = subparsers.add_parser("integrate", help="Generate client integration instructions")
+    integrate_subparsers = integrate_parser.add_subparsers(dest="integrate_command", required=True)
+    integrate_status = integrate_subparsers.add_parser("status", help="Show integration status")
+    integrate_status.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+    integrate_install = integrate_subparsers.add_parser("install", help="Print ccswitch-safe install instructions")
+    integrate_install.add_argument("client", choices=("claude-code", "codex-cli", "gemini-cli"))
+    integrate_install.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
 
     return parser
 
@@ -184,8 +194,15 @@ def run(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "context":
+        prompt = args.prompt
+        if args.stdin_json_prompt:
+            try:
+                payload = json.load(sys.stdin)
+            except json.JSONDecodeError:
+                payload = {}
+            prompt = str(payload.get("prompt") or payload.get("user_prompt") or args.prompt)
         store, config = _init_store(args.home)
-        records = rank_records(_search_records(store, args.prompt, config.retrieval_max_items))[: config.retrieval_max_items]
+        records = rank_records(_search_records(store, prompt, config.retrieval_max_items))[: config.retrieval_max_items]
         context = assemble_context(records)
         if args.format == "hook-json":
             print(json.dumps(hook_json(args.event, context)))
@@ -306,6 +323,18 @@ def run(argv: Sequence[str] | None = None) -> int:
 
         mcp_main()
         return 0
+
+    if args.command == "integrate":
+        from ai_memory.integrations.snippets import SUPPORTED_CLIENTS, install_instructions, integration_status
+
+        if args.integrate_command == "status":
+            for client in SUPPORTED_CLIENTS:
+                status = integration_status(client, args.home)
+                print(f"{status.client}: {status.status} - {status.detail}")
+            return 0
+        if args.integrate_command == "install":
+            print(install_instructions(args.client, args.home))
+            return 0
 
     parser.error(f"Unknown command: {args.command}")
     return 2

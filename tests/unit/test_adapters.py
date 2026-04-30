@@ -73,12 +73,21 @@ def test_codex_discovery_filters_hidden_binary_and_wrong_suffix_files(tmp_path: 
     assert CodexCliAdapter(home=tmp_path).discover() == [valid]
 
 
-def test_gemini_discovery_filters_wrong_suffix_files(tmp_path: Path):
+def test_gemini_discovery_filters_wrong_suffix_hidden_and_code_tracker_files(tmp_path: Path):
     root = tmp_path / ".gemini"
     root.mkdir()
     valid = root / "session.md"
     valid.write_text("hello", encoding="utf-8")
+    hidden_dir = root / ".cache"
+    hidden_dir.mkdir()
+    code_tracker = root / "antigravity" / "code_tracker" / "active" / "project"
+    code_tracker.mkdir(parents=True)
+
     (root / "session.bin").write_bytes(b"\x00\x01")
+    (root / ".hidden.md").write_text("hidden", encoding="utf-8")
+    (hidden_dir / "nested.md").write_text("hidden", encoding="utf-8")
+    (code_tracker / "package.json").write_bytes(b"\xc8\x00")
+    (code_tracker / "README.md").write_bytes(b"\xd3\x00")
 
     assert GeminiCliAdapter(home=tmp_path).discover() == [valid]
 
@@ -112,12 +121,15 @@ def test_build_wrapped_prompt_prepends_context():
 
 def test_aiwrap_run_preserves_client_args_before_wrapped_prompt():
     completed = subprocess.CompletedProcess(args=[], returncode=0)
-    with patch("ai_memory.wrappers.aiwrap.subprocess.run", return_value=completed) as run_mock:
+    with (
+        patch("ai_memory.wrappers.aiwrap._memory_context", return_value="# Retrieved Memory\n- Use pytest"),
+        patch("ai_memory.wrappers.aiwrap.subprocess.run", return_value=completed) as run_mock,
+    ):
         result = aiwrap_run(["claude", "--model", "sonnet", "--", "fix tests"])
 
     assert result == 0
     run_mock.assert_called_once_with(
-        ["claude", "--model", "sonnet", build_wrapped_prompt("", "fix tests")],
+        ["claude", "--model", "sonnet", build_wrapped_prompt("# Retrieved Memory\n- Use pytest", "fix tests")],
         check=False,
     )
 
@@ -134,7 +146,21 @@ def test_aiwrap_run_requires_prompt():
     run_mock.assert_not_called()
 
 
+def test_aiwrap_run_accepts_custom_home(tmp_path: Path):
+    completed = subprocess.CompletedProcess(args=[], returncode=0)
+    with (
+        patch("ai_memory.wrappers.aiwrap._memory_context", return_value="") as context_mock,
+        patch("ai_memory.wrappers.aiwrap.subprocess.run", return_value=completed),
+    ):
+        assert aiwrap_run(["--home", str(tmp_path / ".ai-memory"), "codex", "--", "fix tests"]) == 0
+
+    context_mock.assert_called_once_with(tmp_path / ".ai-memory", "fix tests")
+
+
 def test_aiwrap_run_returns_subprocess_return_code():
     completed = subprocess.CompletedProcess(args=[], returncode=17)
-    with patch("ai_memory.wrappers.aiwrap.subprocess.run", return_value=completed):
+    with (
+        patch("ai_memory.wrappers.aiwrap._memory_context", return_value=""),
+        patch("ai_memory.wrappers.aiwrap.subprocess.run", return_value=completed),
+    ):
         assert aiwrap_run(["claude", "--", "fix tests"]) == 17

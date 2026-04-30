@@ -16,4 +16,11 @@ class GeminiCliAdapter(GenericTranscriptAdapter):
         if not root.exists():
             return []
         allowed_suffixes = {".md", ".json", ".jsonl", ".txt"}
-        return sorted(path for path in root.rglob("*") if path.is_file() and path.suffix in allowed_suffixes)
+        return sorted(
+            path
+            for path in root.rglob("*")
+            if path.is_file()
+            and path.suffix in allowed_suffixes
+            and not any(part.startswith(".") for part in path.relative_to(root).parts)
+            and "code_tracker" not in path.relative_to(root).parts
+        )
