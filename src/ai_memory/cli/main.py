@@ -47,6 +47,19 @@ def _search_records(store: SQLiteMemoryStore, query: str, limit: int) -> list[Me
     return records[:limit]
 
 
+def adapter_for(client: str, home: Path):
+    if client == "claude-code":
+        from ai_memory.adapters.claude_code import ClaudeCodeAdapter
+        return ClaudeCodeAdapter(home=home)
+    if client == "codex-cli":
+        from ai_memory.adapters.codex_cli import CodexCliAdapter
+        return CodexCliAdapter(home=home)
+    if client == "gemini-cli":
+        from ai_memory.adapters.gemini_cli import GeminiCliAdapter
+        return GeminiCliAdapter(home=home)
+    raise ValueError(f"Unsupported client: {client}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ai-memory")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -71,6 +84,10 @@ def build_parser() -> argparse.ArgumentParser:
     context_parser.add_argument("--prompt", default="memory")
     context_parser.add_argument("--format", choices=("markdown", "hook-json"), default="markdown")
     context_parser.add_argument("--event", default="SessionStart")
+
+    discover_parser = subparsers.add_parser("discover", help="Discover client transcript sources")
+    discover_parser.add_argument("--client", required=True)
+    discover_parser.add_argument("--home", type=Path, default=Path.home())
 
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server commands")
     mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
@@ -126,6 +143,15 @@ def run(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(hook_json(args.event, context)))
         else:
             print(context)
+        return 0
+
+    if args.command == "discover":
+        try:
+            adapter = adapter_for(args.client, args.home)
+        except ValueError as error:
+            parser.error(str(error))
+        for source in adapter.discover():
+            print(source)
         return 0
 
     if args.command == "mcp" and args.mcp_command == "serve":
