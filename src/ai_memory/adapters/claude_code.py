@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ai_memory.adapters.generic_transcript import GenericTranscriptAdapter
 from ai_memory.core.models import NormalizedMessage, NormalizedTranscript
+from ai_memory.privacy.redactor import redact_secrets
 
 
 class ClaudeCodeAdapter(GenericTranscriptAdapter):
@@ -24,12 +25,15 @@ class ClaudeCodeAdapter(GenericTranscriptAdapter):
         for line in source.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            data = json.loads(line)
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
             role = data.get("type", data.get("role", "event"))
             content = data.get("message", data.get("content", ""))
-            if isinstance(content, dict):
+            if isinstance(content, dict | list):
                 content = json.dumps(content, ensure_ascii=False)
-            messages.append(NormalizedMessage(role=str(role), content=str(content)))
+            messages.append(NormalizedMessage(role=str(role), content=redact_secrets(str(content))))
         return NormalizedTranscript(
             session_id=f"sess_{source.stem}",
             client=self.name,

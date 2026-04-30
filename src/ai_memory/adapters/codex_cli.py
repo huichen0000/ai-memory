@@ -15,4 +15,11 @@ class CodexCliAdapter(GenericTranscriptAdapter):
         sessions = self.home / ".codex" / "sessions"
         if not sessions.exists():
             return []
-        return sorted(path for path in sessions.rglob("*") if path.is_file())
+        allowed_suffixes = {".md", ".json", ".jsonl", ".txt"}
+        return sorted(
+            path
+            for path in sessions.rglob("*")
+            if path.is_file()
+            and path.suffix in allowed_suffixes
+            and not any(part.startswith(".") for part in path.relative_to(sessions).parts)
+        )

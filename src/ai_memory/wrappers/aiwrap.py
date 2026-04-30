@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import sys
 from typing import Sequence
 
 
@@ -11,13 +12,20 @@ def build_wrapped_prompt(context: str, prompt: str) -> str:
 
 def run(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="aiwrap")
-    parser.add_argument("client")
-    parser.add_argument("prompt", nargs="?")
-    args, remainder = parser.parse_known_args(argv)
-
-    if args.prompt is None:
-        parser.error("aiwrap requires a prompt for the first version")
-    command = [args.client, build_wrapped_prompt("", args.prompt), *remainder]
+    args = list(sys.argv[1:] if argv is None else argv)
+    if not args:
+        parser.error("aiwrap requires: aiwrap <client> [client args...] -- <prompt>")
+    client = args[0]
+    rest = args[1:]
+    if "--" not in rest:
+        parser.error("aiwrap requires: aiwrap <client> [client args...] -- <prompt>")
+    separator_index = rest.index("--")
+    client_args = rest[:separator_index]
+    prompt_parts = rest[separator_index + 1 :]
+    if not prompt_parts:
+        parser.error("aiwrap requires: aiwrap <client> [client args...] -- <prompt>")
+    prompt = " ".join(prompt_parts)
+    command = [client, *client_args, build_wrapped_prompt("", prompt)]
     completed = subprocess.run(command, check=False)
     return completed.returncode
 
