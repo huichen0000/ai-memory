@@ -567,13 +567,12 @@ src/ai_memory/
 | `adapters` | 不同 AI 工具 transcript 适配 |
 | `wrappers` | wrapper prompt 构造 |
 
-## 14. 已验证测试
+## 14. 测试
 
-最终完整单元测试已通过：
+运行单元测试：
 
-```text
+```bash
 py -m pytest tests/unit -v
-74 passed
 ```
 
 覆盖内容包括：
