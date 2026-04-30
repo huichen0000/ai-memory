@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import asdict
 from typing import Any
 
@@ -12,6 +13,8 @@ from ai_memory.retrieval.ranking import rank_records
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
+MAX_LIMIT = 50
+
 
 def _tokenize(value: str) -> tuple[str, ...]:
     seen: list[str] = []
@@ -21,7 +24,12 @@ def _tokenize(value: str) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def _clamp_limit(value: int) -> int:
+    return max(1, min(int(value), MAX_LIMIT))
+
+
 def _safe_search(store: SQLiteMemoryStore, query: str, limit: int) -> list[Any]:
+    sanitized_limit = _clamp_limit(limit)
     if not query.strip():
         return []
     tokens = _tokenize(query)
@@ -31,14 +39,14 @@ def _safe_search(store: SQLiteMemoryStore, query: str, limit: int) -> list[Any]:
     records = []
     for token in tokens:
         try:
-            matches = store.search(token, limit)
+            matches = store.search(token, sanitized_limit)
         except sqlite3.OperationalError:
             continue
         for record in matches:
             if record.id not in seen:
                 seen.add(record.id)
                 records.append(record)
-    return records[:limit]
+    return records[:sanitized_limit]
 
 
 def memory_search(store: SQLiteMemoryStore, query: str, limit: int = 10) -> dict[str, Any]:
@@ -47,7 +55,8 @@ def memory_search(store: SQLiteMemoryStore, query: str, limit: int = 10) -> dict
 
 
 def memory_context(store: SQLiteMemoryStore, prompt: str, max_items: int = 12) -> dict[str, Any]:
-    records = rank_records(_safe_search(store, prompt, max_items))[:max_items]
+    sanitized_limit = _clamp_limit(max_items)
+    records = rank_records(_safe_search(store, prompt, sanitized_limit))[:sanitized_limit]
     return {"context": assemble_context(records), "items": [asdict(record) for record in records]}
 
 
@@ -59,13 +68,35 @@ def memory_read(store: SQLiteMemoryStore, memory_id: str) -> dict[str, Any]:
 
 
 def memory_write(store: SQLiteMemoryStore, queue: ReviewQueue, payload: dict[str, Any]) -> dict[str, Any]:
-    candidate_payload = dict(payload)
-    candidate_payload["tags"] = tuple(candidate_payload.get("tags", ()))
-    candidate_payload["triggers"] = tuple(candidate_payload.get("triggers", ()))
-    candidate = MemoryCandidate(**candidate_payload)
-    result = route_candidates([candidate], store, queue, auto_write_confidence=0.85)
+    if not isinstance(payload, Mapping):
+        return {"status": "discarded", "error": "payload must be an object"}
+    try:
+        candidate_payload = dict(payload)
+        candidate_payload["tags"] = _normalize_text_items(candidate_payload.get("tags", ()), "tags")
+        candidate_payload["triggers"] = _normalize_text_items(candidate_payload.get("triggers", ()), "triggers")
+        candidate = MemoryCandidate(**candidate_payload)
+        result = route_candidates([candidate], store, queue, auto_write_confidence=0.85)
+    except (TypeError, ValueError) as exc:
+        return {"status": "discarded", "error": _safe_error(exc)}
     if result["auto_approved"] == 1:
         return {"status": "auto_approved"}
     if result["queued"] == 1:
         return {"status": "queued"}
     return {"status": "discarded"}
+
+
+def _normalize_text_items(value: object, field: str) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field} must be a list or tuple of strings")
+    if not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{field} must contain only strings")
+    return tuple(value)
+
+
+def _safe_error(exc: Exception) -> str:
+    message = str(exc)
+    if "contains sensitive material" in message:
+        return message
+    if isinstance(exc, TypeError):
+        return "payload is malformed"
+    return message
