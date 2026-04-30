@@ -16,6 +16,6 @@
 
 ## Data flow
 
-Session start calls `ai-memory context`, which searches approved memory and emits markdown or hook JSON.
+For session-start integration, a client hook can call `ai-memory context`, which searches approved memory and emits markdown or hook JSON. The first version exposes this command output but does not install client hooks automatically.
 
-Transcript ingestion currently uses `ai-memory import`, which archives transcript content for later processing. A future `capture`-style flow can route extracted candidates through the write policy when that command surface exists.
+Transcript ingestion currently uses `ai-memory import --archive-only`, which archives transcript content for later processing. Archive-only import stores raw transcript text and does not redact secrets or screen sensitive paths before writing to `raw/generic`; a future `capture`-style flow can route extracted candidates through the write policy when that command surface exists.

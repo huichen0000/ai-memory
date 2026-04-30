@@ -37,6 +37,8 @@ ai-memory context --prompt "run tests"
 ai-memory import --client generic --path ./chat.md --archive-only
 ```
 
+Warning: `--archive-only` stores the transcript text directly under `raw/generic` in the local memory home. It does not redact secrets or screen sensitive paths in this first version, so only import transcripts that are safe for local archival.
+
 ## Review queue
 
 ```bash
