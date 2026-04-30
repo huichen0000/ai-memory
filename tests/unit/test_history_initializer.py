@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from ai_memory.cli.main import run as cli_run
 from ai_memory.core.config import init_home
 from ai_memory.core.models import MemoryCandidate
 from ai_memory.history.initializer import (
@@ -303,3 +304,54 @@ def test_history_init_auto_write_low_risk_uses_existing_policy(tmp_path: Path):
     pending = queue.list_pending()
     assert len(pending) == 1
     assert pending[0].candidate.type == "testing_rule"
+
+
+def test_cli_history_init_dry_run_outputs_summary(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    source_home = tmp_path / "source-home"
+    projects = source_home / ".claude" / "projects" / "demo"
+    projects.mkdir(parents=True)
+    (projects / "session.jsonl").write_text('{"type":"user","message":"Use pytest"}\n', encoding="utf-8")
+
+    result = cli_run([
+        "history",
+        "init",
+        "--home",
+        str(home),
+        "--source-home",
+        str(source_home),
+        "--clients",
+        "claude-code",
+        "--dry-run",
+    ])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Historical initialization complete." in output
+    assert "Clients scanned: 1" in output
+    assert "Sources found: 1" in output
+    assert "Dry run only. No archives, review items, or memories were written." in output
+    assert not (home / "raw" / "claude-code").exists()
+
+
+def test_cli_history_init_rejects_invalid_client(tmp_path: Path, capsys):
+    result = cli_run(["history", "init", "--home", str(tmp_path / ".ai-memory"), "--clients", "unknown"])
+
+    output = capsys.readouterr().err
+    assert result == 2
+    assert "Unsupported history client: unknown" in output
+
+
+def test_cli_history_init_rejects_conflicting_modes(tmp_path: Path, capsys):
+    result = cli_run([
+        "history",
+        "init",
+        "--home",
+        str(tmp_path / ".ai-memory"),
+        "--review-only",
+        "--auto-write-low-risk",
+    ])
+
+    output = capsys.readouterr().err
+    assert result == 2
+    assert "mutually exclusive" in output

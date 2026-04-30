@@ -107,6 +107,18 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
     import_parser.add_argument("--archive-only", action="store_true")
 
+    history_parser = subparsers.add_parser("history", help="Historical transcript initialization")
+    history_subparsers = history_parser.add_subparsers(dest="history_command", required=True)
+    history_init = history_subparsers.add_parser("init", help="Initialize memories from historical transcripts")
+    history_init.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+    history_init.add_argument("--source-home", type=Path, default=Path.home())
+    history_init.add_argument("--clients", default="all")
+    history_init.add_argument("--review-only", action="store_true")
+    history_init.add_argument("--auto-write-low-risk", action="store_true")
+    history_init.add_argument("--limit", type=int)
+    history_init.add_argument("--dry-run", action="store_true")
+    history_init.add_argument("--include-generic", type=Path, action="append", default=[])
+
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server commands")
     mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
     mcp_subparsers.add_parser("serve", help="Serve ai-memory MCP tools")
@@ -226,6 +238,43 @@ def run(argv: Sequence[str] | None = None) -> int:
         print(f"Transcript archived at {target}")
         return 0
 
+    if args.command == "history" and args.history_command == "init":
+        from ai_memory.extraction.providers.command import CommandExtractorProvider
+        from ai_memory.history.initializer import HistoryInitOptions, parse_clients, run_history_init
+
+        try:
+            clients = parse_clients(args.clients)
+            review_only = args.review_only or not args.auto_write_low_risk
+            options = HistoryInitOptions(
+                clients=clients,
+                include_generic=tuple(args.include_generic),
+                review_only=review_only,
+                auto_write_low_risk=args.auto_write_low_risk,
+                limit=args.limit,
+                dry_run=args.dry_run,
+            )
+        except ValueError as error:
+            try:
+                parser.error(str(error))
+            except SystemExit as exit_error:
+                return int(exit_error.code)
+
+        store, config = _init_store(args.home)
+        queue = ReviewQueue(config.review_queue_path)
+        extractor = None
+        if config.extractor_provider == "command" and config.extractor_command:
+            extractor = CommandExtractorProvider(config.extractor_command)
+        summary = run_history_init(
+            options=options,
+            config=config,
+            source_home=args.source_home,
+            store=store,
+            queue=queue,
+            extractor=extractor,
+        )
+        _print_history_summary(summary, config.raw_dir, args.dry_run)
+        return 0
+
     if args.command == "mcp" and args.mcp_command == "serve":
         from ai_memory.mcp.server import main as mcp_main
 
@@ -234,6 +283,31 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+def _print_history_summary(summary: object, raw_dir: Path, dry_run: bool) -> None:
+    print("Historical initialization complete.")
+    print()
+    print(f"Clients scanned: {summary.clients_scanned}")
+    print(f"Sources found: {summary.sources_found}")
+    print(f"Sources processed: {summary.sources_processed}")
+    print(f"Transcripts archived: {summary.transcripts_archived}")
+    print(f"Transcripts skipped: {summary.transcripts_skipped}")
+    print(f"Extraction skipped: {summary.extraction_skipped}")
+    print(f"Candidates extracted: {summary.candidates_extracted}")
+    print(f"Review queued: {summary.review_queued}")
+    print(f"Auto-written: {summary.auto_written}")
+    print(f"Discarded: {summary.discarded}")
+    print(f"Errors: {len(summary.errors)}")
+    print()
+    if dry_run:
+        print("Dry run only. No archives, review items, or memories were written.")
+    else:
+        print(f"Raw transcripts were archived under: {raw_dir}")
+        print("Raw archives may contain original private content.")
+        print("Review candidates with: ai-memory review")
+    for error in summary.errors:
+        print(f"Error: {error}")
 
 
 def main() -> None:
