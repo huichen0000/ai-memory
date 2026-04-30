@@ -43,6 +43,8 @@ class HistoryInitOptions:
     def __post_init__(self) -> None:
         if self.review_only and self.auto_write_low_risk:
             raise ValueError("--review-only and --auto-write-low-risk are mutually exclusive")
+        if not self.review_only and not self.auto_write_low_risk:
+            raise ValueError("either --review-only or --auto-write-low-risk is required")
         if self.limit is not None and self.limit < 1:
             raise ValueError("--limit must be greater than zero")
 

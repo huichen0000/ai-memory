@@ -42,6 +42,18 @@ def test_history_options_reject_conflicting_routing_modes():
         )
 
 
+def test_history_options_require_explicit_routing_mode():
+    with pytest.raises(ValueError, match="either --review-only or --auto-write-low-risk is required"):
+        HistoryInitOptions(
+            clients=("claude-code",),
+            include_generic=(),
+            review_only=False,
+            auto_write_low_risk=False,
+            limit=None,
+            dry_run=False,
+        )
+
+
 def test_collect_generic_sources_accepts_file_and_directory_and_skips_hidden(tmp_path: Path):
     direct = tmp_path / "chat.md"
     direct.write_text("User: remember pytest", encoding="utf-8")
