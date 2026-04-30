@@ -142,3 +142,41 @@ def test_cli_review_lists_empty_queue(tmp_path: Path, capsys):
     assert run(["review", "--home", str(home)]) == 0
     output = capsys.readouterr().out
     assert "No pending review items" in output
+
+
+def test_cli_review_lists_pending_items(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    item = ReviewQueue(home / "review-queue.jsonl").enqueue(make_candidate(), reason="testing_rule requires review")
+
+    assert run(["review", "--home", str(home)]) == 0
+    output = capsys.readouterr().out
+
+    assert item.id in output
+    assert "project://github.com/acme/app/testing" in output
+    assert "testing_rule requires review" in output
+
+
+def test_cli_approve_and_reject_mark_existing_items(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    queue = ReviewQueue(home / "review-queue.jsonl")
+    approve_item = queue.enqueue(make_candidate(), reason="testing_rule requires review")
+    reject_item = queue.enqueue(make_candidate(), reason="testing_rule requires review")
+
+    assert run(["approve", approve_item.id, "--home", str(home)]) == 0
+    assert run(["reject", reject_item.id, "--home", str(home)]) == 0
+    output = capsys.readouterr().out
+
+    assert f"Approved {approve_item.id}" in output
+    assert f"Rejected {reject_item.id}" in output
+    assert ReviewQueue(home / "review-queue.jsonl").list_pending() == []
+
+
+def test_cli_approve_and_reject_report_missing_ids(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    run(["init", "--home", str(home)])
+
+    assert run(["approve", "rev_missing", "--home", str(home)]) == 2
+    assert run(["reject", "rev_missing", "--home", str(home)]) == 2
+    output = capsys.readouterr().out
+
+    assert output.count("Unknown review id: rev_missing") == 2

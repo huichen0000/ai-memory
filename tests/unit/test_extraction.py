@@ -202,3 +202,62 @@ def test_cli_import_generic_archive_only(tmp_path: Path, capsys):
 
     assert "Transcript archived" in output
     assert any((home / "raw" / "generic").iterdir())
+
+
+def test_cli_import_rejects_without_archive_only(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    transcript = Path("tests/fixtures/transcripts/generic/simple-chat.md")
+    run(["init", "--home", str(home)])
+
+    assert run(["import", "--client", "generic", "--path", str(transcript), "--home", str(home)]) == 2
+    output = capsys.readouterr().out
+
+    assert "--archive-only is required" in output
+    assert not (home / "raw" / "generic" / transcript.name).exists()
+
+
+def test_cli_import_rejects_duplicate_archive_name(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    transcript = Path("tests/fixtures/transcripts/generic/simple-chat.md")
+    run(["init", "--home", str(home)])
+
+    assert run(["import", "--client", "generic", "--path", str(transcript), "--home", str(home), "--archive-only"]) == 0
+    assert run(["import", "--client", "generic", "--path", str(transcript), "--home", str(home), "--archive-only"]) == 2
+    output = capsys.readouterr().out
+
+    assert "already exists" in output
+
+
+def test_cli_import_rejects_missing_path(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    missing = tmp_path / "missing.md"
+    run(["init", "--home", str(home)])
+
+    assert run(["import", "--client", "generic", "--path", str(missing), "--home", str(home), "--archive-only"]) == 2
+    output = capsys.readouterr().out
+
+    assert "Transcript path is not a file" in output
+
+
+def test_cli_import_rejects_non_utf8_input(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    transcript = tmp_path / "binary.md"
+    transcript.write_bytes(b"\xff\xfe\xfd")
+    run(["init", "--home", str(home)])
+
+    assert run(["import", "--client", "generic", "--path", str(transcript), "--home", str(home), "--archive-only"]) == 2
+    output = capsys.readouterr().out
+
+    assert "Transcript must be UTF-8 text" in output
+    assert not (home / "raw" / "generic" / transcript.name).exists()
+
+
+def test_cli_import_rejects_unsupported_client(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    transcript = Path("tests/fixtures/transcripts/generic/simple-chat.md")
+    run(["init", "--home", str(home)])
+
+    assert run(["import", "--client", "claude-code", "--path", str(transcript), "--home", str(home), "--archive-only"]) == 2
+    output = capsys.readouterr().out
+
+    assert "Only generic import is supported" in output

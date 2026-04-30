@@ -183,12 +183,20 @@ def run(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "approve":
-        ReviewQueue(args.home / "review-queue.jsonl").mark(args.review_id, "approved")
+        try:
+            ReviewQueue(args.home / "review-queue.jsonl").mark(args.review_id, "approved")
+        except ValueError as error:
+            print(error)
+            return 2
         print(f"Approved {args.review_id}")
         return 0
 
     if args.command == "reject":
-        ReviewQueue(args.home / "review-queue.jsonl").mark(args.review_id, "rejected")
+        try:
+            ReviewQueue(args.home / "review-queue.jsonl").mark(args.review_id, "rejected")
+        except ValueError as error:
+            print(error)
+            return 2
         print(f"Rejected {args.review_id}")
         return 0
 
@@ -196,11 +204,25 @@ def run(argv: Sequence[str] | None = None) -> int:
         if args.client != "generic":
             print("Only generic import is supported by this command in the first version")
             return 2
+        if not args.archive_only:
+            print("--archive-only is required for import")
+            return 2
         source = args.path
+        if not source.is_file():
+            print(f"Transcript path is not a file: {source}")
+            return 2
         raw_dir = args.home / "raw" / "generic"
-        raw_dir.mkdir(parents=True, exist_ok=True)
         target = raw_dir / source.name
-        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        if target.exists():
+            print(f"Archived transcript already exists: {target}")
+            return 2
+        try:
+            content = source.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            print(f"Transcript must be UTF-8 text: {source}")
+            return 2
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
         print(f"Transcript archived at {target}")
         return 0
 
