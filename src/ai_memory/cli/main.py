@@ -410,7 +410,7 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "web":
         from ai_memory.web.dashboard import run_server
-        run_server(host=args.host, port=args.port)
+        run_server(host=args.host, port=args.port, home=args.home)
         return 0
 
     if args.command == "capture":
