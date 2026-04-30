@@ -331,7 +331,7 @@ def test_cli_history_init_dry_run_outputs_summary(tmp_path: Path, capsys):
     assert "Clients scanned: 1" in output
     assert "Sources found: 1" in output
     assert "Dry run only. No archives, review items, or memories were written." in output
-    assert not (home / "raw" / "claude-code").exists()
+    assert not home.exists()
 
 
 def test_cli_history_init_rejects_invalid_client(tmp_path: Path, capsys):

@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Sequence
 
-from ai_memory.core.config import init_home
+from ai_memory.core.config import AppConfig, init_home
 from ai_memory.core.models import MemoryCandidate, MemoryRecord
 from ai_memory.retrieval.assembler import assemble_context, hook_json
 from ai_memory.retrieval.ranking import rank_records
@@ -28,6 +28,24 @@ def _init_store(home: Path) -> tuple[SQLiteMemoryStore, object]:
     store = SQLiteMemoryStore(config.store_path)
     store.initialize()
     return store, config
+
+
+def _dry_run_config(home: Path) -> AppConfig:
+    return AppConfig(
+        home=home,
+        store_path=home / "memory.db",
+        raw_dir=home / "raw",
+        log_dir=home / "logs",
+        review_queue_path=home / "review-queue.jsonl",
+        extractor_provider=None,
+        extractor_command=None,
+        max_input_chars=60000,
+        retrieval_max_items=12,
+        retrieval_max_chars=6000,
+        auto_write_confidence=0.85,
+        redact_secrets=True,
+        confirm_sensitive_sources=True,
+    )
 
 
 def _search_records(store: SQLiteMemoryStore, query: str, limit: int) -> list[MemoryRecord]:
@@ -259,11 +277,17 @@ def run(argv: Sequence[str] | None = None) -> int:
             except SystemExit as exit_error:
                 return int(exit_error.code)
 
-        store, config = _init_store(args.home)
-        queue = ReviewQueue(config.review_queue_path)
-        extractor = None
-        if config.extractor_provider == "command" and config.extractor_command:
-            extractor = CommandExtractorProvider(config.extractor_command)
+        if args.dry_run:
+            config = _dry_run_config(args.home)
+            store = SQLiteMemoryStore(config.store_path)
+            queue = ReviewQueue(config.review_queue_path)
+            extractor = None
+        else:
+            store, config = _init_store(args.home)
+            queue = ReviewQueue(config.review_queue_path)
+            extractor = None
+            if config.extractor_provider == "command" and config.extractor_command:
+                extractor = CommandExtractorProvider(config.extractor_command)
         summary = run_history_init(
             options=options,
             config=config,
