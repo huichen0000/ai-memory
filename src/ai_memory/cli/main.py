@@ -336,3 +336,7 @@ def _print_history_summary(summary: object, raw_dir: Path, dry_run: bool) -> Non
 
 def main() -> None:
     raise SystemExit(run())
+
+
+if __name__ == "__main__":
+    main()
