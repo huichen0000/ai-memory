@@ -16,6 +16,6 @@
 
 ## Data flow
 
-For session-start integration, a client hook can call `ai-memory context`, which searches approved memory and emits markdown or hook JSON. The first version exposes this command output but does not install client hooks automatically.
+For transparent integration, client hooks or wrappers call `ai-memory context`, which searches approved memory and emits markdown or hook JSON. `ai-memory integrate install claude-code` prints ccswitch-safe Claude Code hook snippets without editing `settings.json`; Codex CLI and Gemini CLI can use `aiwrap` to prepend approved memory context before launching the underlying client.
 
 Transcript ingestion currently uses `ai-memory import --archive-only`, which archives transcript content for later processing. Archive-only import stores raw transcript text and does not redact secrets or screen sensitive paths before writing to `raw/generic`; a future `capture`-style flow can route extracted candidates through the write policy when that command surface exists.

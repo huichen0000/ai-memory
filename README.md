@@ -5,7 +5,7 @@ Local-first multi-tool memory for AI coding agents.
 ## First-version scope
 
 - SQLite memory store.
-- CLI commands for init, add, search, context, import, review, and MCP serving.
+- CLI commands for init, add, search, context, import, review, integrate, and MCP serving.
 - JSONL review queue.
 - Privacy redaction for common secrets.
 - Generic transcript import.
@@ -85,7 +85,17 @@ ai-memory approve rev_example
 ai-memory reject rev_example
 ```
 
-## Transparent integrations
+## Transparent integrations: `integrate`
+
+Use `integrate` after initialization and review to connect approved ai-memory records to AI coding tools.
+
+Check available integration modes:
+
+```bash
+ai-memory integrate status
+```
+
+### Claude Code with ccswitch
 
 Generate ccswitch-safe Claude Code hook snippets without modifying `settings.json`:
 
@@ -93,19 +103,48 @@ Generate ccswitch-safe Claude Code hook snippets without modifying `settings.jso
 ai-memory integrate install claude-code
 ```
 
-The snippet includes `SessionStart` and `UserPromptSubmit` hooks that call `ai-memory context` and inject approved memory. Paste it into the active Claude Code profile/settings managed by ccswitch, or through Claude Code's `/hooks` UI.
+The generated JSON includes:
 
-For Codex or Gemini, use the wrapper so approved memory is prepended automatically:
+- `SessionStart`: loads memory when a Claude Code session starts.
+- `UserPromptSubmit`: reads the submitted prompt from hook stdin and retrieves prompt-specific memory.
+- A command hook that calls `ai-memory context --format hook-json`.
+
+Paste the snippet into the active Claude Code profile/settings managed by ccswitch, or add it through Claude Code's `/hooks` UI.
+
+### Codex CLI
+
+Print integration guidance:
+
+```bash
+ai-memory integrate install codex-cli
+```
+
+Run Codex through `aiwrap` so approved memory is prepended automatically:
 
 ```bash
 aiwrap codex -- "fix tests"
+```
+
+### Gemini CLI
+
+Print integration guidance:
+
+```bash
+ai-memory integrate install gemini-cli
+```
+
+Run Gemini through `aiwrap`:
+
+```bash
 aiwrap gemini -- "review this module"
 ```
 
-Check available integration modes:
+### Custom memory home
 
 ```bash
-ai-memory integrate status
+ai-memory integrate status --home D:/path/to/.ai-memory
+ai-memory integrate install claude-code --home D:/path/to/.ai-memory
+aiwrap --home D:/path/to/.ai-memory codex -- "fix tests"
 ```
 
 ## MCP server

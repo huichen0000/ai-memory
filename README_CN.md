@@ -67,6 +67,10 @@ ai-memory approve
 ai-memory reject
 ai-memory import
 ai-memory history init
+ai-memory integrate status
+ai-memory integrate install claude-code
+ai-memory integrate install codex-cli
+ai-memory integrate install gemini-cli
 ai-memory mcp serve
 ```
 
@@ -102,15 +106,25 @@ MCP 写入同样走统一 policy，不允许绕过 review policy。
 
 Claude/Codex/Gemini 目前主要支持 discovery 和基础 normalize，后续可以继续增强不同工具的 transcript 格式解析。
 
-### aiwrap 骨架
+### 无感集成与 aiwrap
 
-实现了基础 wrapper prompt builder：
+已实现 `integrate` 命令，用于生成 Claude Code / Codex CLI / Gemini CLI 的接入说明。
 
 ```bash
-aiwrap <client> [client args...] -- <prompt>
+ai-memory integrate status
+ai-memory integrate install claude-code
+ai-memory integrate install codex-cli
+ai-memory integrate install gemini-cli
 ```
 
-当前是 skeleton，后续可接入 `ai-memory context` 自动拼接 prompt。
+Claude Code 接入默认是 ccswitch-safe：只生成可复制的 hook snippet，不直接修改 `settings.json`。
+
+Codex / Gemini 可以通过 `aiwrap` 自动注入 approved memory context：
+
+```bash
+aiwrap codex -- "fix tests"
+aiwrap gemini -- "review this module"
+```
 
 ## 3. 安装与初始化
 
@@ -216,7 +230,83 @@ ai-memory integrate install claude-code
 
 它只打印 `SessionStart` 和 `UserPromptSubmit` hook 片段，不会修改任何 settings 文件。
 
-## 6. Review Queue
+## 6. 无感集成：integrate
+
+`integrate` 用来把已经初始化和审核过的 ai-memory 记忆接入到不同 AI 工具里，让后续对话自动带上相关长期记忆。
+
+### 查看集成状态
+
+```bash
+ai-memory integrate status
+```
+
+当前会显示三类客户端：
+
+- `claude-code`：通过 hook snippet 接入；
+- `codex-cli`：通过 `aiwrap codex` 接入；
+- `gemini-cli`：通过 `aiwrap gemini` 接入。
+
+### Claude Code：ccswitch-safe hook snippet
+
+如果你使用 ccswitch，不建议直接让工具改 Claude Code 的 `settings.json`，因为 profile 切换可能覆盖配置。
+
+运行：
+
+```bash
+ai-memory integrate install claude-code
+```
+
+它会输出一段 JSON snippet，包含：
+
+- `SessionStart` hook：会话开始时加载默认相关记忆；
+- `UserPromptSubmit` hook：每次提交 prompt 时，根据当前 prompt 再检索相关记忆；
+- 命令内部调用：`ai-memory context --format hook-json`。
+
+把这段 snippet 粘贴到 ccswitch 当前管理的 Claude Code profile/settings 中，或通过 Claude Code `/hooks` UI 添加。
+
+### Codex CLI
+
+运行：
+
+```bash
+ai-memory integrate install codex-cli
+```
+
+实际使用时：
+
+```bash
+aiwrap codex -- "fix tests"
+```
+
+`aiwrap` 会先根据 prompt 从 ai-memory 检索 approved memory，再把这些 context 拼到 prompt 前面传给 Codex。
+
+### Gemini CLI
+
+运行：
+
+```bash
+ai-memory integrate install gemini-cli
+```
+
+实际使用时：
+
+```bash
+aiwrap gemini -- "review this module"
+```
+
+同样会自动检索并注入 approved memory context。
+
+### 自定义 ai-memory home
+
+如果你的记忆目录不是默认的 `~/.ai-memory`，可以传：
+
+```bash
+ai-memory integrate status --home D:/path/to/.ai-memory
+ai-memory integrate install claude-code --home D:/path/to/.ai-memory
+aiwrap --home D:/path/to/.ai-memory codex -- "fix tests"
+```
+
+## 7. Review Queue
 
 高影响或需要确认的记忆不会直接写入 SQLite，而是进入 JSONL review queue。
 
