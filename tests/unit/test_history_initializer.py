@@ -190,6 +190,19 @@ def low_risk_candidate() -> MemoryCandidate:
     )
 
 
+def high_impact_candidate() -> MemoryCandidate:
+    return MemoryCandidate(
+        uri="project://local/demo/testing",
+        type="testing_rule",
+        scope="project",
+        content="All tests must use pytest.",
+        summary="Tests use pytest.",
+        confidence=0.9,
+        risk="low",
+        evidence="historical transcript stated testing rule",
+    )
+
+
 def test_history_init_review_only_queues_low_risk_candidate(tmp_path: Path):
     home = tmp_path / ".ai-memory"
     config = init_home(home)
@@ -255,3 +268,38 @@ def test_history_init_records_extractor_error_and_continues(tmp_path: Path):
     assert summary.candidates_extracted == 0
     assert len(summary.errors) == 2
     assert all("bad extractor output" in error for error in summary.errors)
+
+
+def test_history_init_auto_write_low_risk_uses_existing_policy(tmp_path: Path):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    transcript = tmp_path / "chat.md"
+    transcript.write_text("User: Use pytest", encoding="utf-8")
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=(),
+            include_generic=(transcript,),
+            review_only=False,
+            auto_write_low_risk=True,
+            limit=None,
+            dry_run=False,
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=StaticExtractor([low_risk_candidate(), high_impact_candidate()]),
+    )
+
+    assert summary.candidates_extracted == 2
+    assert summary.auto_written == 1
+    assert summary.review_queued == 1
+    assert summary.discarded == 0
+    assert len(store.search("pytest", limit=10)) == 1
+    pending = queue.list_pending()
+    assert len(pending) == 1
+    assert pending[0].candidate.type == "testing_rule"

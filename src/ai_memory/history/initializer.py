@@ -12,6 +12,7 @@ from ai_memory.adapters.gemini_cli import GeminiCliAdapter
 from ai_memory.adapters.generic_transcript import GenericTranscriptAdapter
 from ai_memory.core.config import AppConfig
 from ai_memory.core.models import MemoryCandidate, NormalizedTranscript
+from ai_memory.core.policy import route_candidate
 from ai_memory.extraction.validator import validate_candidate
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
@@ -144,12 +145,19 @@ def run_history_init(
                     queue.enqueue(candidate, f"historical import from {source.client} requires review")
                     queued += 1
                 else:
-                    store.create_memory(
-                        candidate,
-                        status="auto_approved",
-                        change_reason=f"historical import auto-write from {source.client}",
-                    )
-                    auto_written += 1
+                    decision = route_candidate(candidate, config.auto_write_confidence)
+                    if decision.action == "auto_write":
+                        store.create_memory(
+                            candidate,
+                            status="auto_approved",
+                            change_reason=f"historical import auto-write from {source.client}",
+                        )
+                        auto_written += 1
+                    elif decision.action == "review":
+                        queue.enqueue(candidate, f"historical import from {source.client} requires review")
+                        queued += 1
+                    else:
+                        discarded += 1
         except (OSError, UnicodeDecodeError) as exc:
             skipped += 1
             errors.append(f"{source.client}: {source.path}: {exc}")
