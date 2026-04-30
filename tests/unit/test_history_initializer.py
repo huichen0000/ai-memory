@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from ai_memory.core.config import init_home
+from ai_memory.core.models import MemoryCandidate
 from ai_memory.history.initializer import (
     BUILT_IN_CLIENTS,
     HistoryInitOptions,
@@ -149,3 +150,96 @@ def test_history_init_archives_and_reports_missing_extractor(tmp_path: Path):
     assert summary.transcripts_archived == 1
     assert summary.extraction_skipped == 1
     assert (home / "raw" / "generic" / "chat.md").read_text(encoding="utf-8") == "User: Use pytest for tests"
+
+
+class StaticExtractor:
+    def __init__(self, candidates: list[MemoryCandidate]):
+        self.candidates = candidates
+
+    def extract(self, transcript):
+        return self.candidates
+
+
+class FailingExtractor:
+    def extract(self, transcript):
+        raise ValueError("bad extractor output")
+
+
+def low_risk_candidate() -> MemoryCandidate:
+    return MemoryCandidate(
+        uri="project://local/demo/commands",
+        type="project_command",
+        scope="project",
+        content="Use pytest for tests.",
+        summary="Use pytest.",
+        confidence=0.9,
+        risk="low",
+        evidence="historical transcript stated test command",
+    )
+
+
+def test_history_init_review_only_queues_low_risk_candidate(tmp_path: Path):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    transcript = tmp_path / "chat.md"
+    transcript.write_text("User: Use pytest for tests", encoding="utf-8")
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=(),
+            include_generic=(transcript,),
+            review_only=True,
+            auto_write_low_risk=False,
+            limit=None,
+            dry_run=False,
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=StaticExtractor([low_risk_candidate()]),
+    )
+
+    assert summary.candidates_extracted == 1
+    assert summary.review_queued == 1
+    assert summary.auto_written == 0
+    assert len(queue.list_pending()) == 1
+    assert store.search("pytest", limit=10) == []
+    assert "historical import from generic requires review" in queue.list_pending()[0].reason
+
+
+def test_history_init_records_extractor_error_and_continues(tmp_path: Path):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("User: one", encoding="utf-8")
+    second.write_text("User: two", encoding="utf-8")
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=(),
+            include_generic=(first, second),
+            review_only=True,
+            auto_write_low_risk=False,
+            limit=None,
+            dry_run=False,
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=FailingExtractor(),
+    )
+
+    assert summary.sources_processed == 2
+    assert summary.transcripts_archived == 2
+    assert summary.candidates_extracted == 0
+    assert len(summary.errors) == 2
+    assert all("bad extractor output" in error for error in summary.errors)

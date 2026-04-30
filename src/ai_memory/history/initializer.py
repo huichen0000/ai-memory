@@ -9,8 +9,10 @@ from typing import Protocol
 from ai_memory.adapters.claude_code import ClaudeCodeAdapter
 from ai_memory.adapters.codex_cli import CodexCliAdapter
 from ai_memory.adapters.gemini_cli import GeminiCliAdapter
+from ai_memory.adapters.generic_transcript import GenericTranscriptAdapter
 from ai_memory.core.config import AppConfig
 from ai_memory.core.models import MemoryCandidate, NormalizedTranscript
+from ai_memory.extraction.validator import validate_candidate
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
@@ -99,9 +101,6 @@ def run_history_init(
     queue: ReviewQueue,
     extractor: ExtractorProvider | None,
 ) -> HistoryInitSummary:
-    del store
-    del queue
-
     errors: list[str] = []
     sources = _discover_sources(options, source_home, errors)
     if options.limit is not None:
@@ -117,6 +116,10 @@ def run_history_init(
     archived = 0
     skipped = 0
     extraction_skipped = 0
+    candidates_extracted = 0
+    queued = 0
+    auto_written = 0
+    discarded = 0
     for source in sources:
         try:
             _archive_source(config.raw_dir, source)
@@ -125,8 +128,30 @@ def run_history_init(
             if extractor is None:
                 extraction_skipped += 1
                 continue
+            transcript = _normalize_source(source)
+            candidates = extractor.extract(transcript)
+            candidates_extracted += len(candidates)
+            for candidate in candidates:
+                try:
+                    validate_candidate(candidate)
+                except ValueError as exc:
+                    discarded += 1
+                    errors.append(str(exc))
+                    continue
+                if options.review_only:
+                    queue.enqueue(candidate, f"historical import from {source.client} requires review")
+                    queued += 1
+                else:
+                    store.create_memory(
+                        candidate,
+                        status="auto_approved",
+                        change_reason=f"historical import auto-write from {source.client}",
+                    )
+                    auto_written += 1
         except (OSError, UnicodeDecodeError) as exc:
             skipped += 1
+            errors.append(f"{source.client}: {source.path}: {exc}")
+        except Exception as exc:
             errors.append(f"{source.client}: {source.path}: {exc}")
 
     return HistoryInitSummary(
@@ -136,6 +161,10 @@ def run_history_init(
         transcripts_archived=archived,
         transcripts_skipped=skipped,
         extraction_skipped=extraction_skipped,
+        candidates_extracted=candidates_extracted,
+        review_queued=queued,
+        auto_written=auto_written,
+        discarded=discarded,
         errors=tuple(errors),
     )
 
@@ -160,6 +189,12 @@ def _adapter_for(client: str, home: Path):
     if client == "gemini-cli":
         return GeminiCliAdapter(home=home)
     raise ValueError(f"Unsupported history client: {client}")
+
+
+def _normalize_source(source: HistorySource) -> NormalizedTranscript:
+    if source.client == "generic":
+        return GenericTranscriptAdapter().normalize(source.path)
+    return _adapter_for(source.client, source.path.parent).normalize(source.path)
 
 
 def _archive_source(raw_dir: Path, source: HistorySource) -> Path:
