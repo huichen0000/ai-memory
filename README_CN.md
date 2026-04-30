@@ -66,6 +66,7 @@ ai-memory review
 ai-memory approve
 ai-memory reject
 ai-memory import
+ai-memory history init
 ai-memory mcp serve
 ```
 
@@ -682,36 +683,6 @@ ai-memory approve <id>
 
 在规则检索和 FTS 基础上增加 optional semantic search。
 
-## 17. 当前仓库状态
+## 17. 一句话总结
 
-当前代码已经：
-
-- 合并到 `master`
-- 推送到 GitHub
-- 远端地址：
-
-```text
-https://github.com/huichen0000/ai-memory.git
-```
-
-当前最新提交：
-
-```text
-c720d3e docs: clarify raw import privacy limits
-```
-
-本地状态：
-
-```text
-master...origin/master
-```
-
-测试：
-
-```text
-74 passed
-```
-
-## 18. 一句话总结
-
-`ai-memory` 当前已经是一个可运行、可测试、可扩展的本地优先 AI 编程记忆 MVP：它提供 SQLite 记忆库、CLI、MCP 工具、review queue、隐私 redaction、基础 transcript import、Claude/Codex/Gemini 适配器骨架，并已经完成完整测试、文档、合并和远端推送。
+`ai-memory` 当前已经是一个可运行、可测试、可扩展的本地优先 AI 编程记忆 MVP：它提供 SQLite 记忆库、CLI、MCP 工具、review queue、隐私 redaction、基础 transcript import、Claude/Codex/Gemini 适配器骨架，并已经完成完整测试和文档。
