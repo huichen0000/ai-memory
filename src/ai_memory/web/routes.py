@@ -57,6 +57,18 @@ def create_memory_routes(store: SQLiteMemoryStore) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Memory not found: {memory_id}")
         return JSONResponse({"memory": _memory_to_dict(memory)})
 
+    @router.put("/{memory_id}")
+    async def update_memory(memory_id: str, request: dict) -> JSONResponse:
+        content = request.get("content")
+        if content is None:
+            raise HTTPException(status_code=400, detail="content is required")
+        memory = store.get_memory(memory_id)
+        if memory is None:
+            raise HTTPException(status_code=404, detail=f"Memory not found: {memory_id}")
+        reason = request.get("reason", "Updated via web editor")
+        updated = store.update_memory(memory_id, content, reason)
+        return JSONResponse({"memory": _memory_to_dict(updated)})
+
     return router
 
 

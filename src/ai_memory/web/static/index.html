@@ -41,6 +41,19 @@
             <p>Sources tab - coming soon</p>
         </div>
     </div>
+    <div id="editor-modal" class="modal" style="display:none">
+        <div class="modal-content">
+            <span class="close" onclick="closeEditor()">&times;</span>
+            <h3>Edit Memory</h3>
+            <input type="hidden" id="edit-id">
+            <p id="edit-uri" class="edit-uri"></p>
+            <textarea id="edit-content" rows="10" style="width:100%"></textarea>
+            <div class="modal-actions">
+                <button onclick="saveMemory()">Save</button>
+                <button onclick="closeEditor()">Cancel</button>
+            </div>
+        </div>
+    </div>
     <script src="/static/app.js"></script>
 </body>
 </html>

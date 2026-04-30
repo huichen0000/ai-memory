@@ -76,6 +76,9 @@ function renderMemories(memories) {
             <div class="memory-dates">
                 Created: ${formatDate(memory.created_at)} | Updated: ${formatDate(memory.updated_at)}
             </div>
+            <div class="memory-actions">
+                <button onclick="openEditor('${memory.id}', '${escapeHtml(memory.uri).replace(/'/g, "\\'")}', `${escapeHtml(memory.content).replace(/`/g, "\\`").replace(/\$/g, "\\$")}`)">Edit</button>
+            </div>
         </div>
     `).join('');
 
@@ -95,5 +98,44 @@ function formatDate(isoString) {
         return new Date(isoString).toLocaleString();
     } catch {
         return isoString;
+    }
+}
+
+function openEditor(id, uri, content) {
+    document.getElementById('edit-id').value = id;
+    document.getElementById('edit-uri').textContent = uri;
+    document.getElementById('edit-content').value = content;
+    document.getElementById('editor-modal').style.display = 'block';
+}
+
+function closeEditor() {
+    document.getElementById('editor-modal').style.display = 'none';
+}
+
+async function saveMemory() {
+    const id = document.getElementById('edit-id').value;
+    const content = document.getElementById('edit-content').value;
+
+    if (!content || !content.trim()) {
+        alert('Content cannot be empty');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/memories/' + id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: content })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to save');
+        }
+
+        closeEditor();
+        loadMemories();
+    } catch (error) {
+        alert('Error saving memory: ' + error.message);
     }
 }
