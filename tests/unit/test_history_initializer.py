@@ -1,9 +1,11 @@
+import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from ai_memory.cli.main import run as cli_run
-from ai_memory.core.config import init_home
+from ai_memory.core.config import config_to_dict, init_home
 from ai_memory.core.models import MemoryCandidate
 from ai_memory.history.initializer import (
     BUILT_IN_CLIENTS,
@@ -93,6 +95,29 @@ def test_archive_target_for_uses_stable_suffix_for_duplicate_names(tmp_path: Pat
     assert second.name.startswith("session-")
     assert second.suffix == ".jsonl"
     assert second != first
+
+
+def test_archive_target_for_skips_existing_stable_suffix_targets(tmp_path: Path):
+    raw_dir = tmp_path / "raw"
+    source_a = tmp_path / "a" / "session.jsonl"
+    source_b = tmp_path / "b" / "session.jsonl"
+    source_a.parent.mkdir()
+    source_b.parent.mkdir()
+    source_a.write_text("a", encoding="utf-8")
+    source_b.write_text("b", encoding="utf-8")
+
+    first = archive_target_for(raw_dir, HistorySource("claude-code", source_a))
+    first.parent.mkdir(parents=True)
+    first.write_text("archived", encoding="utf-8")
+    second = archive_target_for(raw_dir, HistorySource("claude-code", source_b))
+    second.write_text("archived", encoding="utf-8")
+
+    third = archive_target_for(raw_dir, HistorySource("claude-code", source_b))
+
+    assert third != first
+    assert third != second
+    assert not third.exists()
+    assert third.name == f"{second.stem}-2{second.suffix}"
 
 
 def test_history_init_dry_run_discovers_sources_without_writes(tmp_path: Path):
@@ -332,6 +357,56 @@ def test_cli_history_init_dry_run_outputs_summary(tmp_path: Path, capsys):
     assert "Sources found: 1" in output
     assert "Dry run only. No archives, review items, or memories were written." in output
     assert not home.exists()
+
+
+def test_cli_history_init_uses_configured_command_extractor(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    config_data = config_to_dict(config)
+    config_data["extractor"] = {
+        "provider": "command",
+        "command": (
+            f'"{sys.executable}" -c '
+            '"import json; print(json.dumps([{'
+            "'uri': 'project://local/demo/history', "
+            "'type': 'project_command', "
+            "'scope': 'project', "
+            "'content': 'Use pytest for tests.', "
+            "'summary': 'Use pytest.', "
+            "'confidence': 0.9, "
+            "'risk': 'low', "
+            "'evidence': 'historical transcript', "
+            "'tags': ['pytest'], "
+            "'triggers': ['pytest']"
+            '}]))"'
+        ),
+        "max_input_chars": config.max_input_chars,
+    }
+    (home / "config.yaml").write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+    transcript = tmp_path / "chat.md"
+    transcript.write_text("User: Use pytest for tests", encoding="utf-8")
+
+    result = cli_run([
+        "history",
+        "init",
+        "--home",
+        str(home),
+        "--source-home",
+        str(tmp_path),
+        "--clients",
+        "claude-code",
+        "--include-generic",
+        str(transcript),
+        "--review-only",
+    ])
+
+    output = capsys.readouterr().out
+    pending = ReviewQueue(home / "review-queue.jsonl").list_pending()
+
+    assert result == 0
+    assert "Candidates extracted: 1" in output
+    assert "Review queued: 1" in output
+    assert len(pending) == 1
 
 
 def test_cli_history_init_rejects_invalid_client(tmp_path: Path, capsys):

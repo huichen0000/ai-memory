@@ -74,8 +74,8 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
     }
 
 
-def init_home(home: Path) -> AppConfig:
-    config = AppConfig(
+def _config_for_home(home: Path) -> AppConfig:
+    return AppConfig(
         home=home,
         store_path=home / "memory.db",
         raw_dir=home / "raw",
@@ -90,10 +90,61 @@ def init_home(home: Path) -> AppConfig:
         redact_secrets=True,
         confirm_sensitive_sources=True,
     )
+
+
+def _resolve_config_path(home: Path, value: object, default: Path) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        return default
+    path = Path(value)
+    return path if path.is_absolute() else home / path
+
+
+def _ensure_home_artifacts(config: AppConfig) -> None:
     config.home.mkdir(parents=True, exist_ok=True)
     config.raw_dir.mkdir(parents=True, exist_ok=True)
     config.log_dir.mkdir(parents=True, exist_ok=True)
+    config.review_queue_path.parent.mkdir(parents=True, exist_ok=True)
     config.review_queue_path.touch(exist_ok=True)
+
+
+def load_config(home: Path) -> AppConfig:
+    config_file = home / "config.yaml"
+    if not config_file.exists():
+        return init_home(home)
+
+    defaults = _config_for_home(home)
+    data = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        data = {}
+    store = data.get("store") if isinstance(data.get("store"), dict) else {}
+    paths = data.get("paths") if isinstance(data.get("paths"), dict) else {}
+    extractor = data.get("extractor") if isinstance(data.get("extractor"), dict) else {}
+    retrieval = data.get("retrieval") if isinstance(data.get("retrieval"), dict) else {}
+    policy = data.get("policy") if isinstance(data.get("policy"), dict) else {}
+    privacy = data.get("privacy") if isinstance(data.get("privacy"), dict) else {}
+
+    config = AppConfig(
+        home=home,
+        store_path=_resolve_config_path(home, store.get("path"), defaults.store_path),
+        raw_dir=_resolve_config_path(home, paths.get("raw_dir"), defaults.raw_dir),
+        log_dir=_resolve_config_path(home, paths.get("log_dir"), defaults.log_dir),
+        review_queue_path=_resolve_config_path(home, paths.get("review_queue"), defaults.review_queue_path),
+        extractor_provider=extractor.get("provider") if isinstance(extractor.get("provider"), str) else defaults.extractor_provider,
+        extractor_command=extractor.get("command") if isinstance(extractor.get("command"), str) else defaults.extractor_command,
+        max_input_chars=int(extractor.get("max_input_chars", defaults.max_input_chars)),
+        retrieval_max_items=int(retrieval.get("max_items", defaults.retrieval_max_items)),
+        retrieval_max_chars=int(retrieval.get("max_chars", defaults.retrieval_max_chars)),
+        auto_write_confidence=float(policy.get("auto_write_confidence", defaults.auto_write_confidence)),
+        redact_secrets=bool(privacy.get("redact_secrets", defaults.redact_secrets)),
+        confirm_sensitive_sources=bool(privacy.get("confirm_sensitive_sources", defaults.confirm_sensitive_sources)),
+    )
+    _ensure_home_artifacts(config)
+    return config
+
+
+def init_home(home: Path) -> AppConfig:
+    config = _config_for_home(home)
+    _ensure_home_artifacts(config)
     config_file = config.home / "config.yaml"
     config_file.write_text(yaml.safe_dump(config_to_dict(config), sort_keys=False), encoding="utf-8")
     return config

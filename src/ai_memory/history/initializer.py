@@ -92,7 +92,17 @@ def archive_target_for(raw_dir: Path, source: HistorySource) -> Path:
     if not first_target.exists():
         return first_target
     digest = hashlib.sha1(str(source.path.resolve()).encode("utf-8")).hexdigest()[:8]
-    return client_dir / f"{source.path.stem}-{digest}{source.path.suffix}"
+    suffix = source.path.suffix
+    stem = f"{source.path.stem}-{digest}"
+    target = client_dir / f"{stem}{suffix}"
+    if not target.exists():
+        return target
+    counter = 2
+    while True:
+        target = client_dir / f"{stem}-{counter}{suffix}"
+        if not target.exists():
+            return target
+        counter += 1
 
 
 def run_history_init(

@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import Sequence
 
-from ai_memory.core.config import AppConfig, init_home
+from ai_memory.core.config import AppConfig, init_home, load_config
 from ai_memory.core.models import MemoryCandidate, MemoryRecord
 from ai_memory.retrieval.assembler import assemble_context, hook_json
 from ai_memory.retrieval.ranking import rank_records
@@ -283,7 +283,9 @@ def run(argv: Sequence[str] | None = None) -> int:
             queue = ReviewQueue(config.review_queue_path)
             extractor = None
         else:
-            store, config = _init_store(args.home)
+            config = load_config(args.home)
+            store = SQLiteMemoryStore(config.store_path)
+            store.initialize()
             queue = ReviewQueue(config.review_queue_path)
             extractor = None
             if config.extractor_provider == "command" and config.extractor_command:
