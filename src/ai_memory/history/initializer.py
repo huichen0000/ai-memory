@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+import hashlib
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
+
+from ai_memory.adapters.claude_code import ClaudeCodeAdapter
+from ai_memory.adapters.codex_cli import CodexCliAdapter
+from ai_memory.adapters.gemini_cli import GeminiCliAdapter
+from ai_memory.core.config import AppConfig
+from ai_memory.core.models import MemoryCandidate, NormalizedTranscript
+from ai_memory.review.queue import ReviewQueue
+from ai_memory.store.sqlite import SQLiteMemoryStore
 
 BUILT_IN_CLIENTS = ("claude-code", "codex-cli", "gemini-cli")
 TRANSCRIPT_SUFFIXES = {".md", ".txt", ".json", ".jsonl"}
+
+
+class ExtractorProvider(Protocol):
+    def extract(self, transcript: NormalizedTranscript) -> list[MemoryCandidate]:
+        ...
 
 
 @dataclass(frozen=True)
@@ -63,6 +79,95 @@ def collect_generic_sources(paths: tuple[Path, ...]) -> list[HistorySource]:
                 if candidate.is_file() and _is_transcript_like(candidate) and not _has_hidden_part(candidate.relative_to(path)):
                     sources.append(HistorySource(client="generic", path=candidate))
     return sources
+
+
+def archive_target_for(raw_dir: Path, source: HistorySource) -> Path:
+    client_dir = raw_dir / source.client
+    first_target = client_dir / source.path.name
+    if not first_target.exists():
+        return first_target
+    digest = hashlib.sha1(str(source.path.resolve()).encode("utf-8")).hexdigest()[:8]
+    return client_dir / f"{source.path.stem}-{digest}{source.path.suffix}"
+
+
+def run_history_init(
+    *,
+    options: HistoryInitOptions,
+    config: AppConfig,
+    source_home: Path,
+    store: SQLiteMemoryStore,
+    queue: ReviewQueue,
+    extractor: ExtractorProvider | None,
+) -> HistoryInitSummary:
+    del store
+    del queue
+
+    errors: list[str] = []
+    sources = _discover_sources(options, source_home, errors)
+    if options.limit is not None:
+        sources = sources[: options.limit]
+    if options.dry_run:
+        return HistoryInitSummary(
+            clients_scanned=len(options.clients),
+            sources_found=len(sources),
+            errors=tuple(errors),
+        )
+
+    processed = 0
+    archived = 0
+    skipped = 0
+    extraction_skipped = 0
+    for source in sources:
+        try:
+            _archive_source(config.raw_dir, source)
+            archived += 1
+            processed += 1
+            if extractor is None:
+                extraction_skipped += 1
+                continue
+        except (OSError, UnicodeDecodeError) as exc:
+            skipped += 1
+            errors.append(f"{source.client}: {source.path}: {exc}")
+
+    return HistoryInitSummary(
+        clients_scanned=len(options.clients),
+        sources_found=len(sources),
+        sources_processed=processed,
+        transcripts_archived=archived,
+        transcripts_skipped=skipped,
+        extraction_skipped=extraction_skipped,
+        errors=tuple(errors),
+    )
+
+
+def _discover_sources(options: HistoryInitOptions, source_home: Path, errors: list[str]) -> list[HistorySource]:
+    sources: list[HistorySource] = []
+    for client in options.clients:
+        try:
+            adapter = _adapter_for(client, source_home)
+            sources.extend(HistorySource(client=client, path=path) for path in adapter.discover())
+        except Exception as exc:
+            errors.append(f"{client}: discovery failed: {exc}")
+    sources.extend(collect_generic_sources(options.include_generic))
+    return sorted(sources, key=lambda source: (source.client, str(source.path)))
+
+
+def _adapter_for(client: str, home: Path):
+    if client == "claude-code":
+        return ClaudeCodeAdapter(home=home)
+    if client == "codex-cli":
+        return CodexCliAdapter(home=home)
+    if client == "gemini-cli":
+        return GeminiCliAdapter(home=home)
+    raise ValueError(f"Unsupported history client: {client}")
+
+
+def _archive_source(raw_dir: Path, source: HistorySource) -> Path:
+    source.path.read_text(encoding="utf-8")
+    target = archive_target_for(raw_dir, source)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source.path, target)
+    return target
 
 
 def _is_transcript_like(path: Path) -> bool:
