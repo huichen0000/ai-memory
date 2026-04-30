@@ -38,6 +38,13 @@ def create_memory_routes(store: SQLiteMemoryStore) -> APIRouter:
             else:
                 memories = store.list_all(status_filter=status_filter)
 
+            if type_filter := (type.strip() if type else None):
+                memories = [m for m in memories if m.type == type_filter]
+            if scope_filter := (scope.strip() if scope else None):
+                memories = [m for m in memories if m.scope == scope_filter]
+
+            memories = memories[:limit]
+
             memories_data = [_memory_to_dict(m) for m in memories]
             return JSONResponse({"memories": memories_data})
         except Exception as e:
