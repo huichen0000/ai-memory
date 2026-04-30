@@ -9,8 +9,13 @@ from typing import Sequence
 
 from ai_memory.core.config import AppConfig, init_home, load_config
 from ai_memory.core.models import MemoryCandidate, MemoryRecord
-from ai_memory.retrieval.assembler import assemble_context, hook_json
-from ai_memory.retrieval.ranking import rank_records
+from ai_memory.core.uri import parse_memory_uri
+from ai_memory.extraction.validator import validate_candidate
+from ai_memory.privacy.sensitive_paths import is_sensitive_path
+from ai_memory.mcp.tools import memory_context as build_memory_context
+from ai_memory.mcp.tools import memory_search as search_memory
+from ai_memory.retrieval.assembler import hook_json
+from ai_memory.retrieval.environment import detect_environment
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
@@ -28,6 +33,13 @@ def _init_store(home: Path) -> tuple[SQLiteMemoryStore, object]:
     store = SQLiteMemoryStore(config.store_path)
     store.initialize()
     return store, config
+
+
+def _repo_id_from_uri(uri: str) -> str | None:
+    parsed = parse_memory_uri(uri)
+    if parsed.namespace in {"project", "branch", "path"}:
+        return parsed.authority
+    return None
 
 
 def _dry_run_config(home: Path) -> AppConfig:
@@ -103,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     context_parser.add_argument("--prompt", default="memory")
     context_parser.add_argument("--format", choices=("markdown", "hook-json"), default="markdown")
     context_parser.add_argument("--event", default="SessionStart")
+    context_parser.add_argument("--path", dest="relative_path")
 
     discover_parser = subparsers.add_parser("discover", help="Discover client transcript sources")
     discover_parser.add_argument("--client", required=True)
@@ -124,6 +137,7 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--path", type=Path, required=True)
     import_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
     import_parser.add_argument("--archive-only", action="store_true")
+    import_parser.add_argument("--allow-sensitive-source", action="store_true")
 
     history_parser = subparsers.add_parser("history", help="Historical transcript initialization")
     history_subparsers = history_parser.add_subparsers(dest="history_command", required=True)
@@ -136,10 +150,27 @@ def build_parser() -> argparse.ArgumentParser:
     history_init.add_argument("--limit", type=int)
     history_init.add_argument("--dry-run", action="store_true")
     history_init.add_argument("--include-generic", type=Path, action="append", default=[])
+    history_init.add_argument("--allow-sensitive-source", action="store_true")
 
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server commands")
     mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
     mcp_subparsers.add_parser("serve", help="Serve ai-memory MCP tools")
+
+    capture_parser = subparsers.add_parser("capture", help="Capture and process a transcript")
+    capture_parser.add_argument("--client", required=True)
+    capture_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+    capture_parser.add_argument("--source-home", type=Path, default=Path.home())
+    capture_parser.add_argument("--session", help="specific session file path")
+    capture_parser.add_argument("--no-archive", action="store_true")
+    capture_parser.add_argument("--no-extract", action="store_true")
+    capture_parser.add_argument("--review-only", action="store_true")
+    capture_parser.add_argument("--auto-write-low-risk", action="store_true")
+
+    wiki_parser = subparsers.add_parser("wiki", help="Export memories to wiki projection")
+    wiki_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+    wiki_parser.add_argument("--output-dir", type=Path, default=None)
+    wiki_parser.add_argument("--include-auto-approved", action="store_true")
+    wiki_parser.add_argument("--types", type=str, default=None)
 
     return parser
 
@@ -158,19 +189,27 @@ def run(argv: Sequence[str] | None = None) -> int:
     if args.command == "add":
         store, _ = _init_store(args.home)
         tokens = _tokenize(args.content)
+        environment = detect_environment(Path.cwd(), client="cli", prompt=args.content)
+        candidate = MemoryCandidate(
+            uri=args.uri,
+            type=args.type,
+            scope=args.scope,
+            content=args.content,
+            summary=args.content,
+            confidence=1.0,
+            risk="low",
+            evidence="manual CLI add",
+            tags=tokens,
+            triggers=tokens,
+            repo_id=environment["repo_id"] or _repo_id_from_uri(args.uri),
+        )
+        try:
+            validate_candidate(candidate)
+        except ValueError as error:
+            print(error)
+            return 2
         record = store.create_memory(
-            MemoryCandidate(
-                uri=args.uri,
-                type=args.type,
-                scope=args.scope,
-                content=args.content,
-                summary=args.content,
-                confidence=1.0,
-                risk="low",
-                evidence="manual CLI add",
-                tags=tokens,
-                triggers=tokens,
-            ),
+            candidate,
             status="approved",
             change_reason="manual CLI add",
         )
@@ -179,14 +218,18 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "search":
         store, _ = _init_store(args.home)
-        for record in _search_records(store, args.query, args.limit):
-            print(record.id, record.uri, record.content)
+        environment = detect_environment(Path.cwd(), client="cli", prompt=args.query)
+        result = search_memory(store, args.query, args.limit, environment)
+        for item in result["items"]:
+            print(item["id"], item["uri"], item["content"])
         return 0
 
     if args.command == "context":
         store, config = _init_store(args.home)
-        records = rank_records(_search_records(store, args.prompt, config.retrieval_max_items))[: config.retrieval_max_items]
-        context = assemble_context(records)
+        environment = detect_environment(Path.cwd(), client="cli", prompt=args.prompt)
+        environment["relative_path"] = args.relative_path
+        result = build_memory_context(store, args.prompt, config.retrieval_max_items, environment)
+        context = result["context"]
         if args.format == "hook-json":
             print(json.dumps(hook_json(args.event, context)))
         else:
@@ -203,7 +246,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "review":
-        queue = ReviewQueue(args.home / "review-queue.jsonl")
+        config = load_config(args.home)
+        queue = ReviewQueue(config.review_queue_path)
         items = queue.list_pending()
         if not items:
             print("No pending review items")
@@ -213,8 +257,22 @@ def run(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "approve":
+        config = load_config(args.home)
+        store = SQLiteMemoryStore(config.store_path)
+        store.initialize()
+        queue = ReviewQueue(config.review_queue_path)
         try:
-            ReviewQueue(args.home / "review-queue.jsonl").mark(args.review_id, "approved")
+            item = queue.get_pending(args.review_id)
+            validate_candidate(item.candidate)
+            existing = store.get_by_uri(item.candidate.uri)
+            if existing is None:
+                store.create_memory(item.candidate, status="approved", change_reason=f"approved review item {item.id}")
+            elif existing.content != item.candidate.content:
+                print(f"Conflicting memory already exists for URI: {item.candidate.uri}")
+                return 2
+            else:
+                store.append_source(existing.id, item.candidate)
+            queue.mark(args.review_id, "approved")
         except ValueError as error:
             print(error)
             return 2
@@ -222,8 +280,9 @@ def run(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "reject":
+        config = load_config(args.home)
         try:
-            ReviewQueue(args.home / "review-queue.jsonl").mark(args.review_id, "rejected")
+            ReviewQueue(config.review_queue_path).mark(args.review_id, "rejected")
         except ValueError as error:
             print(error)
             return 2
@@ -241,13 +300,21 @@ def run(argv: Sequence[str] | None = None) -> int:
         if not source.is_file():
             print(f"Transcript path is not a file: {source}")
             return 2
+        try:
+            resolved_source = source.resolve(strict=True)
+        except OSError as error:
+            print(f"Unable to resolve transcript path: {source}: {error}")
+            return 2
+        if (is_sensitive_path(source) or is_sensitive_path(resolved_source)) and not args.allow_sensitive_source:
+            print(f"Refusing to archive sensitive path without --allow-sensitive-source: {source}")
+            return 2
         raw_dir = args.home / "raw" / "generic"
         target = raw_dir / source.name
         if target.exists():
             print(f"Archived transcript already exists: {target}")
             return 2
         try:
-            content = source.read_text(encoding="utf-8")
+            content = resolved_source.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             print(f"Transcript must be UTF-8 text: {source}")
             return 2
@@ -270,6 +337,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 auto_write_low_risk=args.auto_write_low_risk,
                 limit=args.limit,
                 dry_run=args.dry_run,
+                allow_sensitive_source=args.allow_sensitive_source,
             )
         except ValueError as error:
             try:
@@ -306,6 +374,33 @@ def run(argv: Sequence[str] | None = None) -> int:
 
         mcp_main()
         return 0
+
+    if args.command == "capture":
+        from ai_memory.cli.capture import run_capture
+
+        return run_capture(
+            client=args.client,
+            home=args.home,
+            source_home=args.source_home,
+            session_path=args.session,
+            no_archive=args.no_archive,
+            no_extract=args.no_extract,
+            review_only=args.review_only,
+            auto_write_low_risk=args.auto_write_low_risk,
+        )
+
+    if args.command == "wiki":
+        from ai_memory.cli.wiki import run_wiki
+
+        types = None
+        if args.types:
+            types = tuple(t.strip() for t in args.types.split(",") if t.strip())
+        return run_wiki(
+            home=args.home,
+            output_dir=args.output_dir,
+            include_auto_approved=args.include_auto_approved,
+            types=types,
+        )
 
     parser.error(f"Unknown command: {args.command}")
     return 2

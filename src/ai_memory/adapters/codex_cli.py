@@ -20,6 +20,7 @@ class CodexCliAdapter(GenericTranscriptAdapter):
             path
             for path in sessions.rglob("*")
             if path.is_file()
-            and path.suffix in allowed_suffixes
+            and not path.is_symlink()
+            and path.suffix.lower() in allowed_suffixes
             and not any(part.startswith(".") for part in path.relative_to(sessions).parts)
         )

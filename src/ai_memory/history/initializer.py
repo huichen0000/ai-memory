@@ -14,6 +14,7 @@ from ai_memory.core.config import AppConfig
 from ai_memory.core.models import MemoryCandidate, NormalizedTranscript
 from ai_memory.core.policy import route_candidate
 from ai_memory.extraction.validator import validate_candidate
+from ai_memory.privacy.sensitive_paths import is_sensitive_path
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
@@ -40,6 +41,7 @@ class HistoryInitOptions:
     auto_write_low_risk: bool = False
     limit: int | None = None
     dry_run: bool = False
+    allow_sensitive_source: bool = False
 
     def __post_init__(self) -> None:
         if self.review_only and self.auto_write_low_risk:
@@ -119,10 +121,12 @@ def run_history_init(
     if options.limit is not None:
         sources = sources[: options.limit]
     if options.dry_run:
+        preview_skipped, preview_errors = _preview_archive_skips(sources, options.allow_sensitive_source)
         return HistoryInitSummary(
             clients_scanned=len(options.clients),
             sources_found=len(sources),
-            errors=tuple(errors),
+            transcripts_skipped=preview_skipped,
+            errors=tuple(errors + preview_errors),
         )
 
     processed = 0
@@ -135,7 +139,12 @@ def run_history_init(
     discarded = 0
     for source in sources:
         try:
-            _archive_source(config.raw_dir, source)
+            resolved_path = _resolve_archive_source(source)
+            if _should_reject_sensitive_source(source, resolved_path, options):
+                skipped += 1
+                errors.append(f"{source.client}: Refusing to archive sensitive path without --allow-sensitive-source: {source.path}")
+                continue
+            _archive_source(config.raw_dir, source, resolved_path)
             archived += 1
             processed += 1
             if extractor is None:
@@ -157,12 +166,17 @@ def run_history_init(
                 else:
                     decision = route_candidate(candidate, config.auto_write_confidence)
                     if decision.action == "auto_write":
-                        store.create_memory(
-                            candidate,
-                            status="auto_approved",
-                            change_reason=f"historical import auto-write from {source.client}",
-                        )
-                        auto_written += 1
+                        existing = store.get_by_uri(candidate.uri)
+                        if existing is None:
+                            store.create_memory(
+                                candidate,
+                                status="auto_approved",
+                                change_reason=f"historical import auto-write from {source.client}",
+                            )
+                            auto_written += 1
+                        elif existing.content != candidate.content:
+                            queue.enqueue(candidate, "candidate conflicts with existing approved memory for same URI")
+                            queued += 1
                     elif decision.action == "review":
                         queue.enqueue(candidate, f"historical import from {source.client} requires review")
                         queued += 1
@@ -201,6 +215,34 @@ def _discover_sources(options: HistoryInitOptions, source_home: Path, errors: li
     return sorted(sources, key=lambda source: (source.client, str(source.path)))
 
 
+def _preview_archive_skips(sources: list[HistorySource], allow_sensitive_source: bool) -> tuple[int, list[str]]:
+    skipped = 0
+    errors: list[str] = []
+    options = HistoryInitOptions(
+        clients=(),
+        include_generic=(),
+        review_only=True,
+        auto_write_low_risk=False,
+        allow_sensitive_source=allow_sensitive_source,
+    )
+    for source in sources:
+        try:
+            resolved_path = _resolve_archive_source(source)
+            if _should_reject_sensitive_source(source, resolved_path, options):
+                skipped += 1
+                errors.append(f"{source.client}: Refusing to archive sensitive path without --allow-sensitive-source: {source.path}")
+        except OSError as exc:
+            skipped += 1
+            errors.append(f"{source.client}: {source.path}: {exc}")
+    return skipped, errors
+
+
+def _should_reject_sensitive_source(source: HistorySource, resolved_path: Path, options: HistoryInitOptions) -> bool:
+    if not (is_sensitive_path(source.path) or is_sensitive_path(resolved_path)):
+        return False
+    return source.client != "generic" or not options.allow_sensitive_source
+
+
 def _adapter_for(client: str, home: Path):
     if client == "claude-code":
         return ClaudeCodeAdapter(home=home)
@@ -217,11 +259,15 @@ def _normalize_source(source: HistorySource) -> NormalizedTranscript:
     return _adapter_for(source.client, source.path.parent).normalize(source.path)
 
 
-def _archive_source(raw_dir: Path, source: HistorySource) -> Path:
-    source.path.read_text(encoding="utf-8")
+def _resolve_archive_source(source: HistorySource) -> Path:
+    return source.path.resolve(strict=True)
+
+
+def _archive_source(raw_dir: Path, source: HistorySource, resolved_path: Path) -> Path:
+    resolved_path.read_text(encoding="utf-8")
     target = archive_target_for(raw_dir, source)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source.path, target)
+    shutil.copyfile(resolved_path, target)
     return target
 
 

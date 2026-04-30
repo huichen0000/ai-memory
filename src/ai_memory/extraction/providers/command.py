@@ -4,9 +4,11 @@ import json
 import shlex
 import subprocess
 from dataclasses import asdict
+from pathlib import Path
 from typing import Sequence
 
 from ai_memory.core.models import MemoryCandidate, NormalizedTranscript
+from ai_memory.privacy.redactor import redact_secrets
 
 REQUIRED_CANDIDATE_FIELDS = {"uri", "type", "scope", "content", "summary", "confidence", "risk", "evidence"}
 
@@ -17,7 +19,7 @@ class CommandExtractorProvider:
         self.timeout_seconds = timeout_seconds
 
     def extract(self, transcript: NormalizedTranscript) -> list[MemoryCandidate]:
-        payload = json.dumps(asdict(transcript), ensure_ascii=False)
+        payload = json.dumps(_extractor_payload(transcript), ensure_ascii=False)
         try:
             result = subprocess.run(
                 self.command,
@@ -59,3 +61,15 @@ class CommandExtractorProvider:
             return MemoryCandidate(**candidate_data)
         except TypeError as exc:
             raise ValueError("extractor command returned invalid candidate output") from exc
+
+
+def _extractor_payload(transcript: NormalizedTranscript) -> dict[str, object]:
+    data = asdict(transcript)
+    source_path = str(data.pop("source_path", ""))
+    data["source_name"] = Path(source_path).name if source_path else None
+    data["messages"] = [
+        {**message, "content": redact_secrets(str(message.get("content", "")))} for message in data.get("messages", [])
+    ]
+    for field in ("cwd", "session_id", "repo_id", "branch", "started_at", "ended_at"):
+        data.pop(field, None)
+    return data

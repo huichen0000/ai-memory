@@ -5,7 +5,7 @@ import pytest
 
 from ai_memory.adapters.generic_transcript import GenericTranscriptAdapter
 from ai_memory.cli.main import run
-from ai_memory.core.models import MemoryCandidate
+from ai_memory.core.models import MemoryCandidate, NormalizedMessage, NormalizedTranscript
 from ai_memory.extraction.providers.command import CommandExtractorProvider
 from ai_memory.extraction.router import route_candidates
 from ai_memory.extraction.validator import validate_candidate
@@ -35,6 +35,22 @@ def test_validate_candidate_requires_valid_uri_and_evidence():
     )
 
     validate_candidate(candidate)
+
+
+def test_validate_candidate_rejects_scope_uri_mismatch():
+    candidate = MemoryCandidate(
+        uri="project://local/demo/commands",
+        type="project_command",
+        scope="global",
+        content="Use pytest for tests.",
+        summary="Use pytest.",
+        confidence=0.9,
+        risk="low",
+        evidence="user stated test command",
+    )
+
+    with pytest.raises(ValueError, match="scope does not match URI namespace"):
+        validate_candidate(candidate)
 
 
 def test_route_candidates_auto_writes_low_risk_and_queues_high_impact(tmp_path: Path):
@@ -67,6 +83,113 @@ def test_route_candidates_auto_writes_low_risk_and_queues_high_impact(tmp_path: 
     assert result == {"auto_approved": 1, "queued": 1, "discarded": 0}
     assert len(store.search("pytest", limit=10)) == 1
     assert len(queue.list_pending()) == 1
+
+
+def test_route_candidates_queues_broad_scope_candidates(tmp_path: Path):
+    store = SQLiteMemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    queue = ReviewQueue(tmp_path / "review-queue.jsonl")
+    candidate = MemoryCandidate(
+        uri="global://user/commands",
+        type="project_command",
+        scope="global",
+        content="Use pytest for tests.",
+        summary="Use pytest.",
+        confidence=0.99,
+        risk="low",
+        evidence="user stated test command",
+    )
+
+    result = route_candidates([candidate], store, queue, auto_write_confidence=0.85)
+
+    assert result == {"auto_approved": 0, "queued": 1, "discarded": 0}
+    assert store.search("pytest", limit=10) == []
+    assert len(queue.list_pending()) == 1
+
+
+def test_route_candidates_deduplicates_auto_write_by_uri(tmp_path: Path):
+    store = SQLiteMemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    queue = ReviewQueue(tmp_path / "review-queue.jsonl")
+    candidate = make_candidate()
+
+    first = route_candidates([candidate], store, queue, auto_write_confidence=0.85)
+    second = route_candidates([candidate], store, queue, auto_write_confidence=0.85)
+
+    assert first["auto_approved"] == 1
+    assert second["auto_approved"] == 0
+    assert len(store.search("pytest", limit=10)) == 1
+
+
+def test_route_candidates_queues_conflicting_auto_write_uri(tmp_path: Path):
+    store = SQLiteMemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    queue = ReviewQueue(tmp_path / "review-queue.jsonl")
+    route_candidates([make_candidate()], store, queue, auto_write_confidence=0.85)
+    conflict = replace_candidate(make_candidate(), content="Use unittest for tests.", summary="Use unittest.")
+
+    result = route_candidates([conflict], store, queue, auto_write_confidence=0.85)
+
+    assert result["auto_approved"] == 0
+    assert result["queued"] == 1
+    assert "conflicts with existing approved memory" in queue.list_pending()[0].reason
+
+
+def test_command_provider_minimizes_transcript_payload(monkeypatch):
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = "[]"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured["payload"] = kwargs["input"]
+        return Result()
+
+    monkeypatch.setattr("ai_memory.extraction.providers.command.subprocess.run", fake_run)
+    provider = CommandExtractorProvider([sys.executable, "-c", "print('[]')"])
+
+    provider.extract(make_transcript())
+
+    payload = captured["payload"]
+    assert "tests/fixtures/transcripts/generic/simple-chat.md" not in payload
+    assert '"source_name": "simple-chat.md"' in payload
+    assert '"cwd"' not in payload
+    assert '"session_id"' not in payload
+    assert '"repo_id"' not in payload
+    assert '"branch"' not in payload
+    assert '"started_at"' not in payload
+    assert '"ended_at"' not in payload
+
+
+def test_command_provider_redacts_transcript_payload(monkeypatch, tmp_path: Path):
+    captured = {}
+    transcript_path = tmp_path / "chat.md"
+    transcript = NormalizedTranscript(
+        session_id="session-id",
+        client="generic",
+        source_path=str(transcript_path),
+        messages=(NormalizedMessage(role="user", content="api_key=secret-value"),),
+    )
+
+    class Result:
+        returncode = 0
+        stdout = "[]"
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured["payload"] = kwargs["input"]
+        return Result()
+
+    monkeypatch.setattr("ai_memory.extraction.providers.command.subprocess.run", fake_run)
+    provider = CommandExtractorProvider([sys.executable, "-c", "print('[]')"])
+
+    provider.extract(transcript)
+
+    payload = captured["payload"]
+    assert "secret-value" not in payload
+    assert "[REDACTED:API_KEY]" in payload
 
 
 def test_command_provider_raises_on_nonzero_exit():
@@ -237,6 +360,60 @@ def test_cli_import_rejects_missing_path(tmp_path: Path, capsys):
     output = capsys.readouterr().out
 
     assert "Transcript path is not a file" in output
+
+
+def test_cli_import_rejects_sensitive_path_without_override(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    transcript = tmp_path / ".env"
+    transcript.write_text("User: Remember to use pytest.", encoding="utf-8")
+    run(["init", "--home", str(home)])
+
+    assert run(["import", "--client", "generic", "--path", str(transcript), "--home", str(home), "--archive-only"]) == 2
+    output = capsys.readouterr().out
+
+    assert "Refusing to archive sensitive path" in output
+    assert not (home / "raw" / "generic" / transcript.name).exists()
+
+
+def test_cli_import_allows_sensitive_path_with_override(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    transcript = tmp_path / ".env"
+    transcript.write_text("User: Remember to use pytest.", encoding="utf-8")
+    run(["init", "--home", str(home)])
+
+    assert (
+        run([
+            "import",
+            "--client",
+            "generic",
+            "--path",
+            str(transcript),
+            "--home",
+            str(home),
+            "--archive-only",
+            "--allow-sensitive-source",
+        ])
+        == 0
+    )
+    output = capsys.readouterr().out
+
+    assert "Transcript archived" in output
+    assert (home / "raw" / "generic" / transcript.name).exists()
+
+
+def test_cli_import_rejects_sensitive_symlink_target_without_override(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    target = tmp_path / ".env"
+    target.write_text("User: Remember to use pytest.", encoding="utf-8")
+    transcript = tmp_path / "chat.md"
+    transcript.symlink_to(target)
+    run(["init", "--home", str(home)])
+
+    assert run(["import", "--client", "generic", "--path", str(transcript), "--home", str(home), "--archive-only"]) == 2
+    output = capsys.readouterr().out
+
+    assert "Refusing to archive sensitive path" in output
+    assert not (home / "raw" / "generic" / transcript.name).exists()
 
 
 def test_cli_import_rejects_non_utf8_input(tmp_path: Path, capsys):

@@ -46,6 +46,30 @@ def test_create_memory_persists_record_source_version_and_fts(tmp_path: Path):
     assert [item.id for item in results] == [record.id]
 
 
+def test_append_source_rejects_mismatched_candidate(tmp_path: Path):
+    store = SQLiteMemoryStore(tmp_path / "memory.db")
+    store.initialize()
+    record = store.create_memory(make_candidate(), status="auto_approved", change_reason="test insert")
+    mismatch = MemoryCandidate(
+        uri=make_candidate().uri,
+        type="project_command",
+        scope="project",
+        content="Use pnpm test for tests.",
+        summary="Different summary.",
+        confidence=0.91,
+        risk="low",
+        evidence="different source",
+        repo_id="github.com/acme/app",
+    )
+
+    try:
+        store.append_source(record.id, mismatch)
+    except ValueError as error:
+        assert "does not match target memory" in str(error)
+    else:
+        raise AssertionError("append_source should reject mismatched candidates")
+
+
 def test_update_memory_creates_new_version_and_refreshes_search_index(tmp_path: Path):
     store = SQLiteMemoryStore(tmp_path / "memory.db")
     store.initialize()

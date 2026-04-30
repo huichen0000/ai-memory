@@ -21,10 +21,14 @@ HIGH_IMPACT_TYPES = {
     "testing_rule",
 }
 
+BROAD_SCOPES = {"global", "system", "org", "tool"}
+
 
 def route_candidate(candidate: MemoryCandidate, auto_write_confidence: float) -> RouteDecision:
     if candidate.confidence < 0.5:
         return RouteDecision(action="discard", reason="candidate confidence is too low")
+    if candidate.scope in BROAD_SCOPES:
+        return RouteDecision(action="review", reason="broad-scope memory requires review")
     if candidate.type in HIGH_IMPACT_TYPES:
         return RouteDecision(action="review", reason="high-impact memory type requires review")
     if candidate.risk != "low":

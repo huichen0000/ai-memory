@@ -61,4 +61,5 @@ def detect_environment(cwd: Path, client: str, prompt: str) -> dict[str, str | N
         "branch": branch,
         "remote": remote,
         "repo_id": repo_id,
+        "relative_path": None,
     }

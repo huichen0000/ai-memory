@@ -56,6 +56,7 @@ class MemoryRecord:
     expires_at: str | None
     created_at: str
     updated_at: str
+    triggers: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

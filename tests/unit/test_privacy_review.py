@@ -79,6 +79,27 @@ def test_detect_sensitive_paths_case_insensitively():
     assert is_sensitive_path(Path("SECRET.PEM"))
 
 
+def test_detect_common_credential_paths():
+    assert is_sensitive_path(Path("service-account.json"))
+    assert is_sensitive_path(Path("service_account.json"))
+    assert is_sensitive_path(Path("client_secret.json"))
+    assert is_sensitive_path(Path("oauth_token.json"))
+    assert is_sensitive_path(Path("credentials.txt"))
+    assert is_sensitive_path(Path("private_key.json"))
+    assert is_sensitive_path(Path("private-key.txt"))
+    assert is_sensitive_path(Path("secrets.json"))
+    assert is_sensitive_path(Path(".netrc"))
+    assert is_sensitive_path(Path(".npmrc"))
+    assert is_sensitive_path(Path(".pypirc"))
+    assert is_sensitive_path(Path("id_ecdsa"))
+    assert is_sensitive_path(Path("id_dsa"))
+    assert is_sensitive_path(Path("/home/user/.kube/config"))
+    assert is_sensitive_path(Path("/home/user/.docker/config.json"))
+    assert is_sensitive_path(Path("/home/user/.config/gh/hosts.yml"))
+    assert is_sensitive_path(Path("/home/user/.azure/accessTokens.json"))
+    assert is_sensitive_path(Path("/home/user/.config/gcloud/credentials.db"))
+
+
 def test_review_queue_round_trip(tmp_path: Path):
     queue = ReviewQueue(tmp_path / "review-queue.jsonl")
 
@@ -124,6 +145,19 @@ def test_review_queue_raises_on_malformed_stored_status(tmp_path: Path):
     assert item.id
 
 
+def test_review_queue_mark_removes_terminal_items(tmp_path: Path):
+    path = tmp_path / "review-queue.jsonl"
+    queue = ReviewQueue(path)
+    item = queue.enqueue(make_candidate(), reason="testing_rule requires review")
+
+    queue.mark(item.id, "approved")
+
+    assert queue.list_pending() == []
+    assert "Use pnpm test for tests." not in path.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match=f"Unknown review id: {item.id}"):
+        queue.get_pending(item.id)
+
+
 def test_review_queue_mark_rewrites_without_leaving_temp_files(tmp_path: Path):
     path = tmp_path / "review-queue.jsonl"
     queue = ReviewQueue(path)
@@ -156,8 +190,123 @@ def test_cli_review_lists_pending_items(tmp_path: Path, capsys):
     assert "testing_rule requires review" in output
 
 
+def test_cli_review_approve_and_reject_use_configured_queue_path(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    run(["init", "--home", str(home)])
+    custom_queue = tmp_path / "queues" / "custom-review.jsonl"
+    config_file = home / "config.yaml"
+    config_text = config_file.read_text(encoding="utf-8")
+    config_file.write_text(
+        config_text.replace(f"review_queue: {home / 'review-queue.jsonl'}", f"review_queue: {custom_queue}"),
+        encoding="utf-8",
+    )
+    approve_item = ReviewQueue(custom_queue).enqueue(make_candidate(), reason="testing_rule requires review")
+    reject_item = ReviewQueue(custom_queue).enqueue(make_candidate(), reason="testing_rule requires review")
+
+    assert run(["review", "--home", str(home)]) == 0
+    review_output = capsys.readouterr().out
+    assert approve_item.id in review_output
+    assert reject_item.id in review_output
+
+    assert run(["approve", approve_item.id, "--home", str(home)]) == 0
+    assert run(["reject", reject_item.id, "--home", str(home)]) == 0
+    output = capsys.readouterr().out
+
+    assert f"Approved {approve_item.id}" in output
+    assert f"Rejected {reject_item.id}" in output
+    assert ReviewQueue(custom_queue).list_pending() == []
+
+
+def test_cli_approve_rejects_invalid_review_candidate(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    run(["init", "--home", str(home)])
+    invalid = MemoryCandidate(
+        uri="project://github.com/acme/app/testing",
+        type="testing_rule",
+        scope="global",
+        content="Use pnpm test for tests.",
+        summary="Test command is pnpm test.",
+        confidence=0.93,
+        risk="low",
+        evidence="user confirmed",
+    )
+    item = ReviewQueue(home / "review-queue.jsonl").enqueue(invalid, reason="testing_rule requires review")
+
+    assert run(["approve", item.id, "--home", str(home)]) == 2
+    output = capsys.readouterr().out
+
+    assert "candidate scope does not match URI namespace" in output
+    assert [pending.id for pending in ReviewQueue(home / "review-queue.jsonl").list_pending()] == [item.id]
+
+
+def test_cli_approve_writes_review_item_to_memory_store(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    run(["init", "--home", str(home)])
+    queue = ReviewQueue(home / "review-queue.jsonl")
+    approve_item = queue.enqueue(make_candidate(), reason="testing_rule requires review")
+
+    assert run(["approve", approve_item.id, "--home", str(home)]) == 0
+    output = capsys.readouterr().out
+
+    assert f"Approved {approve_item.id}" in output
+    from ai_memory.store.sqlite import SQLiteMemoryStore
+
+    store = SQLiteMemoryStore(home / "memory.db")
+    records = store.search("pnpm", limit=10)
+    assert len(records) == 1
+    assert records[0].content == "Use pnpm test for tests."
+    assert ReviewQueue(home / "review-queue.jsonl").list_pending() == []
+
+
+def test_cli_approve_duplicate_same_uri_does_not_create_second_memory(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    run(["init", "--home", str(home)])
+    queue = ReviewQueue(home / "review-queue.jsonl")
+    first = queue.enqueue(make_candidate(), reason="testing_rule requires review")
+    second = queue.enqueue(make_candidate(), reason="testing_rule requires review")
+
+    assert run(["approve", first.id, "--home", str(home)]) == 0
+    assert run(["approve", second.id, "--home", str(home)]) == 0
+    capsys.readouterr()
+
+    from ai_memory.store.sqlite import SQLiteMemoryStore
+
+    store = SQLiteMemoryStore(home / "memory.db")
+    records = store.search("pnpm", limit=10)
+    assert len(records) == 1
+    assert len(store.list_sources(records[0].id)) == 2
+
+
+def test_cli_approve_conflicting_uri_keeps_item_pending(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    run(["init", "--home", str(home)])
+    queue = ReviewQueue(home / "review-queue.jsonl")
+    existing = queue.enqueue(make_candidate(), reason="testing_rule requires review")
+    assert run(["approve", existing.id, "--home", str(home)]) == 0
+
+    conflicting_candidate = make_candidate()
+    conflicting_candidate = MemoryCandidate(
+        uri=conflicting_candidate.uri,
+        type=conflicting_candidate.type,
+        scope=conflicting_candidate.scope,
+        content="Use pytest for tests.",
+        summary="Test command is pytest.",
+        confidence=conflicting_candidate.confidence,
+        risk=conflicting_candidate.risk,
+        evidence="conflicting user confirmation",
+    )
+    conflict = queue.enqueue(conflicting_candidate, reason="testing_rule requires review")
+
+    assert run(["approve", conflict.id, "--home", str(home)]) == 2
+    output = capsys.readouterr().out
+
+    assert "Conflicting memory already exists" in output
+    assert [item.id for item in ReviewQueue(home / "review-queue.jsonl").list_pending()] == [conflict.id]
+
+
 def test_cli_approve_and_reject_mark_existing_items(tmp_path: Path, capsys):
     home = tmp_path / ".ai-memory"
+    run(["init", "--home", str(home)])
     queue = ReviewQueue(home / "review-queue.jsonl")
     approve_item = queue.enqueue(make_candidate(), reason="testing_rule requires review")
     reject_item = queue.enqueue(make_candidate(), reason="testing_rule requires review")

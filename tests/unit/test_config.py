@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from ai_memory.core.config import AppConfig, default_config, init_home
+from ai_memory.core.config import default_config, init_home
 from ai_memory.cli.main import run
 
 

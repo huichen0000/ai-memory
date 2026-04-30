@@ -42,13 +42,20 @@ class ReviewQueue:
     def list_pending(self) -> list[ReviewItem]:
         return [item for item in self._read_all() if item.status == "pending"]
 
+    def get_pending(self, review_id: str) -> ReviewItem:
+        for item in self._read_all():
+            if item.id == review_id:
+                if item.status != "pending":
+                    raise ValueError(f"Review item is not pending: {review_id}")
+                return item
+        raise ValueError(f"Unknown review id: {review_id}")
+
     def mark(self, review_id: str, status: ReviewStatus) -> None:
         status = self._validate_status(status)
         items = []
         found = False
         for item in self._read_all():
             if item.id == review_id:
-                items.append(ReviewItem(item.id, item.candidate, item.reason, status, item.created_at, utc_now_iso()))
                 found = True
             else:
                 items.append(item)
