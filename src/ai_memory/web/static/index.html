@@ -8,8 +8,38 @@
 </head>
 <body>
     <h1>ai-memory Dashboard</h1>
+    <div class="tabs">
+        <button class="tab-button active" data-tab="memories">Memories</button>
+        <button class="tab-button" data-tab="review">Review</button>
+        <button class="tab-button" data-tab="stats">Stats</button>
+        <button class="tab-button" data-tab="sources">Sources</button>
+    </div>
     <div id="app">
-        <p>Loading...</p>
+        <div class="tab-content active" id="tab-memories">
+            <div class="filters">
+                <select id="filter-status" multiple size="3">
+                    <option value="pending">Pending</option>
+                    <option value="approved">Approved</option>
+                    <option value="auto_approved">Auto Approved</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="expired">Expired</option>
+                </select>
+                <input type="text" id="search-input" placeholder="Search memories...">
+                <button id="refresh-btn">Refresh</button>
+            </div>
+            <div id="memories-container">
+                <p>Loading...</p>
+            </div>
+        </div>
+        <div class="tab-content" id="tab-review">
+            <p>Review tab - coming soon</p>
+        </div>
+        <div class="tab-content" id="tab-stats">
+            <p>Stats tab - coming soon</p>
+        </div>
+        <div class="tab-content" id="tab-sources">
+            <p>Sources tab - coming soon</p>
+        </div>
     </div>
     <script src="/static/app.js"></script>
 </body>

@@ -7,12 +7,16 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+from ai_memory.web.routes import create_memory_routes, create_memory_store
+
 
 def create_app(home: Path | None = None) -> FastAPI:
     app = FastAPI(title="ai-memory Dashboard")
 
     if home is not None:
         app.state.home = home
+        store = create_memory_store(home)
+        app.include_router(create_memory_routes(store))
 
     static_dir = Path(__file__).parent / "static"
 
