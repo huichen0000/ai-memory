@@ -1,0 +1,9 @@
+body {
+    font-family: system-ui, -apple-system, sans-serif;
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+    background: #f5f5f5;
+}
+h1 { color: #333; }
+#app { background: white; padding: 20px; border-radius: 8px; }

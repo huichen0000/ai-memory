@@ -11,6 +11,7 @@ from ai_memory.core.config import AppConfig, init_home, load_config
 from ai_memory.core.models import MemoryCandidate, MemoryRecord
 from ai_memory.core.uri import parse_memory_uri
 from ai_memory.extraction.validator import validate_candidate
+from ai_memory.privacy.redactor import redact_secrets
 from ai_memory.privacy.sensitive_paths import is_sensitive_path
 from ai_memory.mcp.tools import memory_context as build_memory_context
 from ai_memory.mcp.tools import memory_search as search_memory
@@ -138,6 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
     import_parser.add_argument("--archive-only", action="store_true")
     import_parser.add_argument("--allow-sensitive-source", action="store_true")
+    import_parser.add_argument("--redact-archive", action="store_true")
 
     history_parser = subparsers.add_parser("history", help="Historical transcript initialization")
     history_subparsers = history_parser.add_subparsers(dest="history_command", required=True)
@@ -151,10 +153,16 @@ def build_parser() -> argparse.ArgumentParser:
     history_init.add_argument("--dry-run", action="store_true")
     history_init.add_argument("--include-generic", type=Path, action="append", default=[])
     history_init.add_argument("--allow-sensitive-source", action="store_true")
+    history_init.add_argument("--redact-archive", action="store_true")
 
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server commands")
     mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
     mcp_subparsers.add_parser("serve", help="Serve ai-memory MCP tools")
+
+    web_parser = subparsers.add_parser("web", help="Start web dashboard")
+    web_parser.add_argument("--host", default="127.0.0.1")
+    web_parser.add_argument("--port", type=int, default=8080)
+    web_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
 
     capture_parser = subparsers.add_parser("capture", help="Capture and process a transcript")
     capture_parser.add_argument("--client", required=True)
@@ -165,12 +173,34 @@ def build_parser() -> argparse.ArgumentParser:
     capture_parser.add_argument("--no-extract", action="store_true")
     capture_parser.add_argument("--review-only", action="store_true")
     capture_parser.add_argument("--auto-write-low-risk", action="store_true")
+    capture_parser.add_argument("--redact-archive", action="store_true")
 
     wiki_parser = subparsers.add_parser("wiki", help="Export memories to wiki projection")
     wiki_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
     wiki_parser.add_argument("--output-dir", type=Path, default=None)
     wiki_parser.add_argument("--include-auto-approved", action="store_true")
     wiki_parser.add_argument("--types", type=str, default=None)
+
+    system_parser = subparsers.add_parser("system", help="System memory commands")
+    system_subparsers = system_parser.add_subparsers(dest="system_command", required=True)
+    system_init = system_subparsers.add_parser("init", help="Seed system memory bootstrapping records")
+    system_init.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+    system_init.add_argument("--force", action="store_true", help="Re-seed even existing system memories")
+
+    memory_parser = subparsers.add_parser("memory", help="Memory inspection and update commands")
+    memory_subparsers = memory_parser.add_subparsers(dest="memory_command", required=True)
+    memory_show = memory_subparsers.add_parser("show", help="Show memory details")
+    memory_show.add_argument("memory_id")
+    memory_show.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+    memory_list = memory_subparsers.add_parser("list", help="List memories")
+    memory_list.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+    memory_list.add_argument("--status", type=str, default=None, help="Filter by status (approved,auto_approved,proposed,rejected)")
+    memory_list.add_argument("--uri", type=str, default=None, help="Filter by URI pattern")
+    memory_list.add_argument("--limit", type=int, default=50)
+    memory_update = memory_subparsers.add_parser("update", help="Update memory content")
+    memory_update.add_argument("memory_id")
+    memory_update.add_argument("new_content", nargs="+", help="New content text")
+    memory_update.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
 
     return parser
 
@@ -319,6 +349,8 @@ def run(argv: Sequence[str] | None = None) -> int:
             print(f"Transcript must be UTF-8 text: {source}")
             return 2
         raw_dir.mkdir(parents=True, exist_ok=True)
+        if args.redact_archive:
+            content = redact_secrets(content)
         target.write_text(content, encoding="utf-8")
         print(f"Transcript archived at {target}")
         return 0
@@ -338,6 +370,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 limit=args.limit,
                 dry_run=args.dry_run,
                 allow_sensitive_source=args.allow_sensitive_source,
+                redact_archive=args.redact_archive,
             )
         except ValueError as error:
             try:
@@ -375,6 +408,11 @@ def run(argv: Sequence[str] | None = None) -> int:
         mcp_main()
         return 0
 
+    if args.command == "web":
+        from ai_memory.web.dashboard import run_server
+        run_server(host=args.host, port=args.port)
+        return 0
+
     if args.command == "capture":
         from ai_memory.cli.capture import run_capture
 
@@ -387,6 +425,7 @@ def run(argv: Sequence[str] | None = None) -> int:
             no_extract=args.no_extract,
             review_only=args.review_only,
             auto_write_low_risk=args.auto_write_low_risk,
+            redact_archive=args.redact_archive,
         )
 
     if args.command == "wiki":
@@ -401,6 +440,39 @@ def run(argv: Sequence[str] | None = None) -> int:
             include_auto_approved=args.include_auto_approved,
             types=types,
         )
+
+    if args.command == "system" and args.system_command == "init":
+        from ai_memory.system.init import seed_system_memories
+
+        store, _ = _init_store(args.home)
+        seeded, skipped = seed_system_memories(store)
+        if args.force:
+            print(f"System memory seeded: {seeded} new, {skipped} existing (force re-seed)")
+        else:
+            print(f"System memory seeded: {seeded} new, {skipped} existing (skipped existing)")
+        return 0
+
+    if args.command == "memory":
+        from ai_memory.cli.update import list_memories, show_memory, update_memory
+
+        if args.memory_command == "show":
+            code, output = show_memory(memory_id=args.memory_id, home=args.home)
+            print(output)
+            return code
+
+        if args.memory_command == "list":
+            status_filter = None
+            if args.status:
+                status_filter = tuple(s.strip() for s in args.status.split(",") if s.strip())
+            code, output = list_memories(home=args.home, status_filter=status_filter, uri_pattern=args.uri, limit=args.limit)
+            print(output)
+            return code
+
+        if args.memory_command == "update":
+            new_content = " ".join(args.new_content)
+            code, output = update_memory(memory_id=args.memory_id, new_content=new_content, home=args.home)
+            print(output)
+            return code
 
     parser.error(f"Unknown command: {args.command}")
     return 2
