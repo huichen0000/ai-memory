@@ -11,6 +11,7 @@ from ai_memory.core.config import init_home
 from ai_memory.core.models import MemoryCandidate, MemoryRecord
 from ai_memory.retrieval.assembler import assemble_context, hook_json
 from ai_memory.retrieval.ranking import rank_records
+from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
 
@@ -89,6 +90,23 @@ def build_parser() -> argparse.ArgumentParser:
     discover_parser.add_argument("--client", required=True)
     discover_parser.add_argument("--home", type=Path, default=Path.home())
 
+    review_parser = subparsers.add_parser("review", help="List pending review items")
+    review_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+
+    approve_parser = subparsers.add_parser("approve", help="Approve a review item")
+    approve_parser.add_argument("review_id")
+    approve_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+
+    reject_parser = subparsers.add_parser("reject", help="Reject a review item")
+    reject_parser.add_argument("review_id")
+    reject_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+
+    import_parser = subparsers.add_parser("import", help="Archive a transcript")
+    import_parser.add_argument("--client", required=True)
+    import_parser.add_argument("--path", type=Path, required=True)
+    import_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+    import_parser.add_argument("--archive-only", action="store_true")
+
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server commands")
     mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
     mcp_subparsers.add_parser("serve", help="Serve ai-memory MCP tools")
@@ -152,6 +170,38 @@ def run(argv: Sequence[str] | None = None) -> int:
             parser.error(str(error))
         for source in adapter.discover():
             print(source)
+        return 0
+
+    if args.command == "review":
+        queue = ReviewQueue(args.home / "review-queue.jsonl")
+        items = queue.list_pending()
+        if not items:
+            print("No pending review items")
+            return 0
+        for item in items:
+            print(f"{item.id} {item.candidate.uri} {item.reason}")
+        return 0
+
+    if args.command == "approve":
+        ReviewQueue(args.home / "review-queue.jsonl").mark(args.review_id, "approved")
+        print(f"Approved {args.review_id}")
+        return 0
+
+    if args.command == "reject":
+        ReviewQueue(args.home / "review-queue.jsonl").mark(args.review_id, "rejected")
+        print(f"Rejected {args.review_id}")
+        return 0
+
+    if args.command == "import":
+        if args.client != "generic":
+            print("Only generic import is supported by this command in the first version")
+            return 2
+        source = args.path
+        raw_dir = args.home / "raw" / "generic"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        target = raw_dir / source.name
+        target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        print(f"Transcript archived at {target}")
         return 0
 
     if args.command == "mcp" and args.mcp_command == "serve":

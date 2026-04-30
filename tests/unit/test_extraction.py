@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from ai_memory.adapters.generic_transcript import GenericTranscriptAdapter
+from ai_memory.cli.main import run
 from ai_memory.core.models import MemoryCandidate
 from ai_memory.extraction.providers.command import CommandExtractorProvider
 from ai_memory.extraction.router import route_candidates
@@ -189,3 +190,15 @@ def make_candidate() -> MemoryCandidate:
 def replace_candidate(candidate: MemoryCandidate, **changes: object) -> MemoryCandidate:
     data = candidate.__dict__ | changes
     return MemoryCandidate(**data)
+
+
+def test_cli_import_generic_archive_only(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    transcript = Path("tests/fixtures/transcripts/generic/simple-chat.md")
+    run(["init", "--home", str(home)])
+
+    assert run(["import", "--client", "generic", "--path", str(transcript), "--home", str(home), "--archive-only"]) == 0
+    output = capsys.readouterr().out
+
+    assert "Transcript archived" in output
+    assert any((home / "raw" / "generic").iterdir())

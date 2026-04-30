@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from ai_memory.cli.main import run
 from ai_memory.core.models import MemoryCandidate
 from ai_memory.privacy.redactor import redact_secrets
 from ai_memory.privacy.sensitive_paths import is_sensitive_path
@@ -132,3 +133,12 @@ def test_review_queue_mark_rewrites_without_leaving_temp_files(tmp_path: Path):
 
     assert path.exists()
     assert sorted(file.name for file in tmp_path.iterdir()) == ["review-queue.jsonl"]
+
+
+def test_cli_review_lists_empty_queue(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    run(["init", "--home", str(home)])
+
+    assert run(["review", "--home", str(home)]) == 0
+    output = capsys.readouterr().out
+    assert "No pending review items" in output
