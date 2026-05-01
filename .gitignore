@@ -9,3 +9,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .venv/
+.idea/
+.idea
+/src/ai_memory.egg-info/
+/uv.lock

@@ -14,6 +14,7 @@ from ai_memory.core.config import AppConfig
 from ai_memory.core.models import MemoryCandidate, NormalizedTranscript
 from ai_memory.core.policy import route_candidate
 from ai_memory.extraction.validator import validate_candidate
+from ai_memory.privacy.redactor import redact_secrets
 from ai_memory.privacy.sensitive_paths import is_sensitive_path
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
@@ -42,6 +43,7 @@ class HistoryInitOptions:
     limit: int | None = None
     dry_run: bool = False
     allow_sensitive_source: bool = False
+    redact_archive: bool = False
 
     def __post_init__(self) -> None:
         if self.review_only and self.auto_write_low_risk:
@@ -144,7 +146,7 @@ def run_history_init(
                 skipped += 1
                 errors.append(f"{source.client}: Refusing to archive sensitive path without --allow-sensitive-source: {source.path}")
                 continue
-            _archive_source(config.raw_dir, source, resolved_path)
+            _archive_source(config.raw_dir, source, resolved_path, redact=options.redact_archive)
             archived += 1
             processed += 1
             if extractor is None:
@@ -263,11 +265,14 @@ def _resolve_archive_source(source: HistorySource) -> Path:
     return source.path.resolve(strict=True)
 
 
-def _archive_source(raw_dir: Path, source: HistorySource, resolved_path: Path) -> Path:
-    resolved_path.read_text(encoding="utf-8")
+def _archive_source(raw_dir: Path, source: HistorySource, resolved_path: Path, redact: bool = False) -> Path:
     target = archive_target_for(raw_dir, source)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(resolved_path, target)
+    if redact:
+        content = resolved_path.read_text(encoding="utf-8")
+        target.write_text(redact_secrets(content), encoding="utf-8")
+    else:
+        shutil.copyfile(resolved_path, target)
     return target
 
 

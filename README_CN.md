@@ -67,6 +67,12 @@ ai-memory approve
 ai-memory reject
 ai-memory import
 ai-memory history init
+ai-memory capture
+ai-memory wiki
+ai-memory system init
+ai-memory memory show
+ai-memory memory list
+ai-memory memory update
 ai-memory mcp serve
 ```
 
@@ -255,7 +261,7 @@ review queue 文件位置：
 当前 MVP 支持 generic transcript 的 archive-only 导入：
 
 ```bash
-ai-memory import --client generic --path ./chat.md --archive-only
+ai-memory import --client generic --path ./chat.md --archive-only --redact-archive
 ```
 
 导入后会归档到：
@@ -266,7 +272,7 @@ ai-memory import --client generic --path ./chat.md --archive-only
 
 重要隐私说明：
 
-`--archive-only` 会原样保存 transcript 文本，不会自动 redaction，也不会检查 sensitive path。
+`--archive-only` 会原样保存 transcript 文本，不会自动 redaction。默认会拒绝 sensitive source path；只有显式传入 `--allow-sensitive-source` 后才会允许归档。
 
 因此只应该导入你确认适合本地归档的 transcript。
 
@@ -284,7 +290,7 @@ raw archive 本身仍可能包含原始内容。
 如果要从过去使用过的 AI 编程工具中初始化记忆，可以运行：
 
 ```bash
-ai-memory history init --clients all --review-only
+ai-memory history init --clients all --review-only --redact-archive
 ```
 
 该命令会扫描本机支持的工具历史记录（`claude-code`、`codex-cli`、`gemini-cli`），把发现的 transcript 归档到 `~/.ai-memory/raw/<client>/`，并在已配置 extractor provider 时提取候选记忆。
@@ -315,7 +321,7 @@ ai-memory history init --clients all --auto-write-low-risk
 ai-memory history init --include-generic ./old-chats --review-only
 ```
 
-隐私提醒：raw archive 可能包含原始 transcript 文本。redaction 和 validation 主要保护被提取出来的长期记忆，raw archive 本身仍然是源 transcript 的本地副本。
+隐私提醒：raw archive 可能包含原始 transcript 文本。默认会拒绝 sensitive source path。`--allow-sensitive-source` 只适用于显式 generic import 和 `history init --include-generic`；内置客户端发现到的 sensitive path 始终会被跳过。使用 `--redact-archive` 可以对归档内容进行常见 secret 脱敏（API key、密码、bearer token、私钥、数据库凭证）。redaction 和 validation 主要保护被提取出来的长期记忆，但未脱敏的 raw archive 仍是源 transcript 的本地副本。
 
 ## 8. MCP Server
 
@@ -597,91 +603,36 @@ py -m pytest tests/unit -v
 
 当前 MVP 有一些明确限制：
 
-1. 不会自动安装 Claude Code hook。
-2. `import --archive-only` 只做原始归档，不做 redaction。
-3. capture 命令还未实现。
-4. doctor 命令还未实现。
-5. extractor provider 已有接口和 command provider，但还没有默认 LLM extractor。
-6. Codex/Gemini adapter 目前是基础 discovery + generic normalization。
-7. 没有 Web dashboard。
-8. 没有远程同步。
-9. 没有多用户权限。
-10. 没有强制 vector database。
+1. 不会自动安装 Claude Code hook；当前只生成或输出可手动配置的集成片段。
+2. MCP 写入策略刻意保守：未绑定可信环境的 MCP write 一律进入 review；MCP server 写入也强制 review-only；`global`、`system`、`org`、`tool` 等宽作用域不会自动批准。
+3. 候选写入要求 URI namespace 与 `scope` 一致；这能保护作用域召回，但 malformed historical / external extractor 输出会被丢弃或进入 review，而不是静默修正。
+4. 检索仍是 SQLite FTS + repo/branch/path/scope/trigger 确定性排序，不是语义检索。
+5. 当前存储是 SQLite-first，没有实现 Nocturne Memory 式 graph node、alias 或 path cache。
+6. 没有 Web dashboard、远程同步或多用户权限。
 
 ## 16. 后续建议路线
 
 后续可以按以下顺序继续增强：
 
-### 1. 实现 capture 命令
+### 1. 增强冲突检测、版本合并
 
-目标：
+继续增强为：
+- 对兼容更新写入新的 `memory_versions`；
+- 对冲突内容提供 merge/reject/replace 命令；
+- 增加最小化 audit log，仅记录 review decision metadata，不保留完整候选内容。
 
-```bash
-ai-memory capture --client claude-code
-```
-
-能力：
-
-- 找到最新 transcript；
-- normalize；
-- archive；
-- redaction；
-- extractor；
-- route candidates；
-- 输出统计。
-
-### 2. 实现 extractor provider 配置
-
-从 `config.yaml` 读取：
-
-```yaml
-extractor:
-  provider: command
-  command: ...
-  max_input_chars: 60000
-```
-
-### 3. 接入 Claude Code hooks
-
-提供文档或自动安装命令：
-
-```bash
-ai-memory hooks install claude-code
-```
-
-但需要非常谨慎，避免自动改用户配置。
-
-### 4. 增强 transcript importer
+### 2. 增强 transcript adapter
 
 支持：
-
 - Claude Code JSONL 更完整格式；
 - Codex CLI session 格式；
 - Gemini CLI 历史格式；
 - OpenCode / Cline / Cursor / Aider 等。
 
-### 5. 实现 review approve 后写入 SQLite
+### 3. 可选 embedding
 
-当前 review queue 能 mark approve/reject。后续可增强为：
-
-```bash
-ai-memory approve <id>
-```
-
-批准后自动写入 SQLite，并生成 source/version。
-
-### 6. 冲突检测和 dedupe
-
-避免同类 memory 重复写入：
-
-- URI-level dedupe；
-- 内容相似度；
-- type + scope + trigger 冲突检查。
-
-### 7. 可选 embedding
-
-在规则检索和 FTS 基础上增加 optional semantic search。
+在确定性的 scope、trigger 和 FTS 检索稳定后，再增加 optional semantic search。
 
 ## 17. 一句话总结
 
-`ai-memory` 当前已经是一个可运行、可测试、可扩展的本地优先 AI 编程记忆 MVP：它提供 SQLite 记忆库、CLI、MCP 工具、review queue、隐私 redaction、基础 transcript import、Claude/Codex/Gemini 适配器骨架，并已经完成完整测试和文档。
+`ai-memory` 当前已经是一个可运行、可测试、可扩展的本地优先 AI 编程记忆 MVP：它提供 SQLite 记忆库、CLI（包括 capture 和 wiki 投影）、MCP 工具、review queue、隐私 redaction、基础 transcript import、Claude/Codex/Gemini 适配器骨架，并已经完成完整测试和文档。
