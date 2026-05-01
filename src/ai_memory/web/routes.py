@@ -6,7 +6,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -221,10 +220,14 @@ def create_source_routes(raw_dir: Path) -> APIRouter:
 
     @router.get("/{path:path}")
     async def get_source(path: str) -> JSONResponse:
-        file_path = raw_dir / path
-        if not file_path.exists() or not file_path.is_file():
+        resolved_raw = raw_dir.resolve()
+        file_path = (raw_dir / path).resolve()
+        if not file_path.is_file() or not str(file_path).startswith(str(resolved_raw)):
             raise HTTPException(status_code=404, detail=f"Source not found: {path}")
         try:
+            size = file_path.stat().st_size
+            if size > 5 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="File too large (max 5MB)")
             content = file_path.read_text(encoding="utf-8")
             return JSONResponse({"content": content})
         except Exception as e:
