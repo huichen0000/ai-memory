@@ -94,7 +94,6 @@ Approving a pending review item writes the candidate to SQLite as approved memor
 - Candidate writes require URI namespace and `scope` to match; this protects scoped retrieval but means malformed historical/external extractor output is discarded or queued instead of silently normalized.
 - Retrieval is deterministic keyword, trigger, path, branch, repo, and scope ranking over SQLite FTS; optional embeddings are not implemented yet.
 - The storage model is SQLite-first and does not implement Nocturne-style graph nodes, aliases, or path caches yet.
-- No web dashboard, remote sync, or multi-user permission model is included in this MVP.
 
 ## Suggested roadmap
 
@@ -118,10 +117,65 @@ ai-memory import
 ai-memory history init
 ai-memory capture
 ai-memory wiki
+ai-memory web
+ai-memory server
 ai-memory mcp serve
+ai-memory system init
+ai-memory memory show
+ai-memory memory list
+ai-memory memory update
 ```
 
-## MCP server
+## Combined server (with auth)
+
+For multi-user deployments, use the combined server which includes MCP, web dashboard, and user authentication:
+
+```bash
+ai-memory server --port 8080
+```
+
+This starts a single server that serves:
+- **Web dashboard** at `/`
+- **MCP tools** at `/mcp` (with API key or JWT auth)
+- **Auth APIs** at `/api/auth/*`
+
+### Authentication
+
+**Register a user:**
+```bash
+curl -X POST "http://localhost:8080/api/auth/register?username=alice&password=secret"
+```
+
+**Login:**
+```bash
+curl -X POST "http://localhost:8080/api/auth/login?username=alice&password=secret"
+```
+
+Returns: `{"token": "...", "user": {...}}`
+
+**Use MCP with API key:**
+```bash
+# Set in Claude Code config
+mcp__ai-memory__url=http://localhost:8080/mcp
+mcp__ai-memory__api_key=your-api-key-here
+```
+
+### User management (admin only)
+
+```bash
+# List users
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/admin/users
+
+# Create user
+curl -X POST "http://localhost:8080/api/admin/users?username=bob&password=secret&role=write" \
+  -H "Authorization: Bearer $TOKEN"
+
+# Delete user
+curl -X DELETE "http://localhost:8080/api/admin/users/$USER_ID" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+## MCP server (local)
 
 ```bash
 ai-memory mcp serve
