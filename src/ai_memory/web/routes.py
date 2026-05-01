@@ -3,10 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from ai_memory.core.models import MemoryCandidate, MemoryRecord, MemoryStatus
+from ai_memory.core.models import MemoryCandidate
 from ai_memory.extraction.validator import validate_candidate
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
@@ -129,18 +129,16 @@ def _review_item_to_dict(item: Any) -> dict[str, Any]:
     }
 
 
-def create_review_routes(review_queue_path: Path, store: SQLiteMemoryStore) -> APIRouter:
+def create_review_routes(queue: ReviewQueue, store: SQLiteMemoryStore) -> APIRouter:
     router = APIRouter(prefix="/api/review", tags=["review"])
 
     @router.get("")
     async def list_pending() -> JSONResponse:
-        queue = ReviewQueue(review_queue_path)
         items = queue.list_pending()
         return JSONResponse({"items": [_review_item_to_dict(item) for item in items]})
 
     @router.post("/{review_id}/approve")
     async def approve_item(review_id: str) -> JSONResponse:
-        queue = ReviewQueue(review_queue_path)
         try:
             item = queue.get_pending(review_id)
         except ValueError as e:
@@ -168,7 +166,6 @@ def create_review_routes(review_queue_path: Path, store: SQLiteMemoryStore) -> A
 
     @router.post("/{review_id}/reject")
     async def reject_item(review_id: str) -> JSONResponse:
-        queue = ReviewQueue(review_queue_path)
         try:
             queue.get_pending(review_id)
         except ValueError as e:
