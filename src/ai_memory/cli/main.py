@@ -164,6 +164,11 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--port", type=int, default=8080)
     web_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
 
+    server_parser = subparsers.add_parser("server", help="Start combined MCP+web server with auth")
+    server_parser.add_argument("--host", default="0.0.0.0")
+    server_parser.add_argument("--port", type=int, default=8080)
+    server_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+
     capture_parser = subparsers.add_parser("capture", help="Capture and process a transcript")
     capture_parser.add_argument("--client", required=True)
     capture_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
@@ -411,6 +416,11 @@ def run(argv: Sequence[str] | None = None) -> int:
     if args.command == "web":
         from ai_memory.web.dashboard import run_server
         run_server(host=args.host, port=args.port, home=args.home)
+        return 0
+
+    if args.command == "server":
+        from ai_memory.server.server import run_server as run_combined_server
+        run_combined_server(host=args.host, port=args.port, home=args.home)
         return 0
 
     if args.command == "capture":
