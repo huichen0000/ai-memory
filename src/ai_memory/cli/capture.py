@@ -13,6 +13,7 @@ from ai_memory.extraction.providers.command import CommandExtractorProvider
 from ai_memory.extraction.router import route_candidates
 from ai_memory.extraction.validator import validate_candidate
 from ai_memory.history.initializer import HistorySource, archive_target_for
+from ai_memory.privacy.redactor import redact_secrets
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
@@ -55,6 +56,7 @@ def run_capture(
     no_extract: bool,
     review_only: bool,
     auto_write_low_risk: bool,
+    redact_archive: bool = False,
 ) -> int:
     config = load_config(home)
     store = SQLiteMemoryStore(config.store_path)
@@ -79,6 +81,7 @@ def run_capture(
         no_extract=no_extract,
         review_only=review_only,
         auto_write_low_risk=auto_write_low_risk,
+        redact_archive=redact_archive,
     )
     _print_capture_summary(summary, config.raw_dir, client)
     return 0 if summary.error is None else 2
@@ -94,6 +97,7 @@ def _capture_single(
     no_extract: bool,
     review_only: bool,
     auto_write_low_risk: bool,
+    redact_archive: bool = False,
 ) -> CaptureSummary:
     try:
         resolved = source.path.resolve(strict=True)
@@ -104,9 +108,12 @@ def _capture_single(
         try:
             target = archive_target_for(config.raw_dir, source)
             target.parent.mkdir(parents=True, exist_ok=True)
-            import shutil
-
-            shutil.copyfile(resolved, target)
+            if redact_archive:
+                content = resolved.read_text(encoding="utf-8")
+                target.write_text(redact_secrets(content), encoding="utf-8")
+            else:
+                import shutil
+                shutil.copyfile(resolved, target)
             archived = True
         except Exception as exc:
             return CaptureSummary(error=f"Archive failed: {exc}")
