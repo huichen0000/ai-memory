@@ -16,10 +16,15 @@ function initTabs() {
 
             button.classList.add('active');
             document.getElementById('tab-' + tabId).classList.add('active');
+
+            if (tabId === 'review') {
+                loadReview();
+            }
         });
     });
 
     document.getElementById('refresh-btn').addEventListener('click', loadMemories);
+    document.getElementById('refresh-review-btn').addEventListener('click', loadReview);
 }
 
 async function loadMemories() {
@@ -137,5 +142,79 @@ async function saveMemory() {
         loadMemories();
     } catch (error) {
         alert('Error saving memory: ' + error.message);
+    }
+}
+
+async function loadReview() {
+    const container = document.getElementById('review-list');
+    container.innerHTML = '<p>Loading...</p>';
+
+    try {
+        const response = await fetch('/api/review');
+        if (!response.ok) {
+            throw new Error('Failed to fetch review items: ' + response.statusText);
+        }
+
+        const data = await response.json();
+        renderReview(data.items);
+    } catch (error) {
+        container.innerHTML = '<p class="error">Error: ' + error.message + '</p>';
+    }
+}
+
+function renderReview(items) {
+    const container = document.getElementById('review-list');
+
+    if (!items || items.length === 0) {
+        container.innerHTML = '<p>No pending review items.</p>';
+        return;
+    }
+
+    const html = items.map(item => `
+        <div class="memory-card" data-id="${item.id}">
+            <div class="memory-header">
+                <span class="memory-type">${escapeHtml(item.candidate.type)}</span>
+                <span class="memory-scope">${escapeHtml(item.candidate.scope)}</span>
+                <span class="memory-confidence">Confidence: ${item.candidate.confidence.toFixed(2)}</span>
+                <span class="memory-risk">Risk: ${escapeHtml(item.candidate.risk)}</span>
+            </div>
+            <div class="memory-summary">${escapeHtml(item.candidate.summary)}</div>
+            <div class="memory-content-preview">${escapeHtml(truncate(item.candidate.content, 200))}</div>
+            <div class="memory-uri">${escapeHtml(item.candidate.uri)}</div>
+            <div class="review-reason"><strong>Reason:</strong> ${escapeHtml(item.reason)}</div>
+            <div class="memory-dates">
+                Created: ${formatDate(item.created_at)}
+            </div>
+            <div class="memory-actions">
+                <button onclick="handleReview('${item.id}', 'approve')">Approve</button>
+                <button onclick="handleReview('${item.id}', 'reject')">Reject</button>
+            </div>
+        </div>
+    `).join('');
+
+    container.innerHTML = html;
+}
+
+function truncate(text, maxLength) {
+    if (!text) return '';
+    if (text.length <= maxLength) return text;
+    return text.substring(0, maxLength) + '...';
+}
+
+async function handleReview(id, action) {
+    try {
+        const response = await fetch('/api/review/' + id + '/' + action, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Failed to ' + action);
+        }
+
+        loadReview();
+    } catch (error) {
+        alert('Error: ' + error.message);
     }
 }

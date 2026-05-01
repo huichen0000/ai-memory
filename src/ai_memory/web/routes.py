@@ -3,9 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from ai_memory.core.models import MemoryCandidate, MemoryRecord, MemoryStatus
+from ai_memory.extraction.validator import validate_candidate
+from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
 
@@ -91,3 +94,87 @@ def _memory_to_dict(memory: Any) -> dict[str, Any]:
         "updated_at": memory.updated_at,
         "triggers": list(memory.triggers) if memory.triggers else [],
     }
+
+
+def _candidate_to_dict(candidate: MemoryCandidate) -> dict[str, Any]:
+    return {
+        "uri": candidate.uri,
+        "type": candidate.type,
+        "scope": candidate.scope,
+        "content": candidate.content,
+        "summary": candidate.summary,
+        "confidence": candidate.confidence,
+        "risk": candidate.risk,
+        "evidence": candidate.evidence,
+        "tags": list(candidate.tags) if candidate.tags else [],
+        "triggers": list(candidate.triggers) if candidate.triggers else [],
+        "repo_id": candidate.repo_id,
+        "branch": candidate.branch,
+        "path_glob": candidate.path_glob,
+        "expires_at": candidate.expires_at,
+        "source_client": candidate.source_client,
+        "session_id": candidate.session_id,
+        "transcript_ref": candidate.transcript_ref,
+    }
+
+
+def _review_item_to_dict(item: Any) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "candidate": _candidate_to_dict(item.candidate),
+        "reason": item.reason,
+        "status": item.status,
+        "created_at": item.created_at,
+        "reviewed_at": item.reviewed_at,
+    }
+
+
+def create_review_routes(review_queue_path: Path, store: SQLiteMemoryStore) -> APIRouter:
+    router = APIRouter(prefix="/api/review", tags=["review"])
+
+    @router.get("")
+    async def list_pending() -> JSONResponse:
+        queue = ReviewQueue(review_queue_path)
+        items = queue.list_pending()
+        return JSONResponse({"items": [_review_item_to_dict(item) for item in items]})
+
+    @router.post("/{review_id}/approve")
+    async def approve_item(review_id: str) -> JSONResponse:
+        queue = ReviewQueue(review_queue_path)
+        try:
+            item = queue.get_pending(review_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+        try:
+            validate_candidate(item.candidate)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=f"Validation failed: {e}")
+
+        existing = store.get_by_uri(item.candidate.uri)
+
+        if existing is None:
+            store.create_memory(item.candidate, "approved", f"Approved from review: {item.reason}")
+        elif existing.content == item.candidate.content:
+            store.append_source(existing.id, item.candidate)
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="Conflicting memory already exists for this URI with different content",
+            )
+
+        queue.mark(review_id, "approved")
+        return JSONResponse({"status": "approved"})
+
+    @router.post("/{review_id}/reject")
+    async def reject_item(review_id: str) -> JSONResponse:
+        queue = ReviewQueue(review_queue_path)
+        try:
+            queue.get_pending(review_id)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+        queue.mark(review_id, "rejected")
+        return JSONResponse({"status": "rejected"})
+
+    return router
