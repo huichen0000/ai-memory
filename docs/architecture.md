@@ -10,9 +10,12 @@
 - `extraction`: transcript normalization, candidate validation, provider interface, and routing.
 - `privacy`: redaction and sensitive path detection.
 - `review`: JSONL review queue.
-- `cli`: user commands including `capture` and `wiki`.
-- `mcp`: MCP tools and server.
+- `cli`: user commands including `capture`, `wiki`, `system`, and `memory`.
+- `mcp`: MCP tools and server (local stdio or remote HTTP).
 - `adapters`: Claude Code, Codex CLI, Gemini CLI, and generic transcript discovery.
+- `web`: local-only web dashboard UI (served by `ai-memory web`).
+- `server`: combined MCP + web server with unified auth (served by `ai-memory server`).
+- `auth`: user accounts, API keys, JWT tokens, and bcrypt password hashing.
 
 ## Data flow
 

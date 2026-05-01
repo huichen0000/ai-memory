@@ -23,10 +23,14 @@ The first version includes a utility that treats common secret-bearing filenames
 
 Archive commands reject sensitive source paths by default after checking both the submitted path and resolved symlink target. `--allow-sensitive-source` only applies to explicit generic imports and `history init --include-generic`; sensitive paths discovered from built-in clients are always skipped.
 
-## Raw archive-only import
+## Raw archive redaction
 
-`ai-memory import --client generic --path <file> --archive-only` copies transcript text directly into `raw/generic` under the local memory home. It rejects sensitive source paths by default and requires `--allow-sensitive-source` to archive them explicitly. Allowed archive contents are still raw local copies and are not redacted, so only use archive-only import with transcripts that are safe to store locally.
+All archive commands (`import`, `history init`, `capture`) accept `--redact-archive` to apply secret redaction before storing archived transcripts. This replaces bearer tokens, API keys, passwords, private keys, and database credentials with `[REDACTED:...]` placeholders.
 
 ## Review policy
 
 High-impact memory types such as user preferences, security constraints, testing rules, API contracts, and architecture decisions enter the review queue instead of being auto-written.
+
+## Centralized server
+
+When deployed with `ai-memory server`, all data resides on the server. Remote clients authenticate via API key (MCP tools) or JWT token (web dashboard). User accounts are stored in `auth.db` with bcrypt-hashed passwords.
