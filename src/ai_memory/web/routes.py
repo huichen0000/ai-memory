@@ -134,24 +134,7 @@ def create_stats_routes(store: SQLiteMemoryStore) -> APIRouter:
 
     @router.get("")
     async def get_stats() -> JSONResponse:
-        memories = store.list_all()
-        total = len(memories)
-
-        by_status: dict[str, int] = {}
-        by_type: dict[str, int] = {}
-        by_scope: dict[str, int] = {}
-
-        for m in memories:
-            by_status[m.status] = by_status.get(m.status, 0) + 1
-            by_type[m.type] = by_type.get(m.type, 0) + 1
-            by_scope[m.scope] = by_scope.get(m.scope, 0) + 1
-
-        return JSONResponse({
-            "total": total,
-            "by_status": by_status,
-            "by_type": by_type,
-            "by_scope": by_scope,
-        })
+        return JSONResponse(store.get_stats())
 
     return router
 

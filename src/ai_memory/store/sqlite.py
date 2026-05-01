@@ -220,6 +220,14 @@ class SQLiteMemoryStore:
                 rows = db.execute("SELECT * FROM memories ORDER BY updated_at DESC").fetchall()
         return [self._record_from_row(row) for row in rows]
 
+    def get_stats(self) -> dict[str, Any]:
+        with self.connect() as db:
+            total = db.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            by_status = dict(db.execute("SELECT status, COUNT(*) FROM memories GROUP BY status").fetchall())
+            by_type = dict(db.execute("SELECT type, COUNT(*) FROM memories GROUP BY type").fetchall())
+            by_scope = dict(db.execute("SELECT scope, COUNT(*) FROM memories GROUP BY scope").fetchall())
+        return {"total": total, "by_status": by_status, "by_type": by_type, "by_scope": by_scope}
+
     def list_contextual(self, environment: dict[str, str | None], limit: int) -> list[MemoryRecord]:
         del limit
         repo_id = environment.get("repo_id")
