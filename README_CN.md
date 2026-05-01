@@ -69,11 +69,13 @@ ai-memory import
 ai-memory history init
 ai-memory capture
 ai-memory wiki
+ai-memory web
+ai-memory server
+ai-memory mcp serve
 ai-memory system init
 ai-memory memory show
 ai-memory memory list
 ai-memory memory update
-ai-memory mcp serve
 ```
 
 ### Transcript / Extraction 基础
@@ -353,6 +355,48 @@ ai-memory mcp serve
 - 高影响类型进入 review queue；
 - 无效或敏感候选会被 discard。
 
+## 8. 集中式服务器（多用户部署）
+
+用于多用户场景，使用 combined server：
+
+```bash
+ai-memory server --port 8080
+```
+
+启动后提供：
+- **Web dashboard** at `/`
+- **MCP tools** at `/mcp`（API key 或 JWT 认证）
+- **Auth APIs** at `/api/auth/*`
+
+### 认证
+
+注册用户：
+```bash
+curl -X POST "http://localhost:8080/api/auth/register?username=alice&password=secret"
+```
+
+登录：
+```bash
+curl -X POST "http://localhost:8080/api/auth/login?username=alice&password=secret"
+```
+
+返回：`{"token": "...", "user": {...}}`
+
+### 用户管理（仅 admin）
+
+```bash
+# 列出用户
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/admin/users
+
+# 创建用户
+curl -X POST "http://localhost:8080/api/admin/users?username=bob&password=secret&role=write" \
+  -H "Authorization: Bearer $TOKEN"
+
+# 删除用户
+curl -X DELETE "http://localhost:8080/api/admin/users/$USER_ID" \
+  -H "Authorization: Bearer $TOKEN"
+```
+
 ## 9. 记忆 URI 模型
 
 每条 memory 都有稳定 URI，例如：
@@ -608,7 +652,6 @@ py -m pytest tests/unit -v
 3. 候选写入要求 URI namespace 与 `scope` 一致；这能保护作用域召回，但 malformed historical / external extractor 输出会被丢弃或进入 review，而不是静默修正。
 4. 检索仍是 SQLite FTS + repo/branch/path/scope/trigger 确定性排序，不是语义检索。
 5. 当前存储是 SQLite-first，没有实现 Nocturne Memory 式 graph node、alias 或 path cache。
-6. 没有 Web dashboard、远程同步或多用户权限。
 
 ## 16. 后续建议路线
 
@@ -635,4 +678,4 @@ py -m pytest tests/unit -v
 
 ## 17. 一句话总结
 
-`ai-memory` 当前已经是一个可运行、可测试、可扩展的本地优先 AI 编程记忆 MVP：它提供 SQLite 记忆库、CLI（包括 capture 和 wiki 投影）、MCP 工具、review queue、隐私 redaction、基础 transcript import、Claude/Codex/Gemini 适配器骨架，并已经完成完整测试和文档。
+`ai-memory` 当前已经是一个可运行、可测试、可扩展的本地优先 AI 编程记忆 MVP：它提供 SQLite 记忆库、CLI（包括 capture、wiki 投影、system init、memory 命令）、本地 web dashboard、集中式多用户 server（MCP + web + 认证）、review queue、隐私 redaction、基础 transcript import、Claude/Codex/Gemini 适配器骨架，并已经完成完整测试和文档。
