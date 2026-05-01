@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 
 from ai_memory.core.config import default_config
 from ai_memory.review.queue import ReviewQueue
-from ai_memory.web.routes import create_memory_routes, create_memory_store, create_review_routes
+from ai_memory.web.routes import create_memory_routes, create_memory_store, create_review_routes, create_stats_routes
 
 
 def create_app(home: Path | None = None) -> FastAPI:
@@ -21,6 +21,7 @@ def create_app(home: Path | None = None) -> FastAPI:
         store = create_memory_store(home)
         app.include_router(create_memory_routes(store))
         app.include_router(create_review_routes(ReviewQueue(config.review_queue_path), store))
+        app.include_router(create_stats_routes(store))
 
     static_dir = Path(__file__).parent / "static"
 

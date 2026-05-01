@@ -20,6 +20,9 @@ function initTabs() {
             if (tabId === 'review') {
                 loadReview();
             }
+            if (tabId === 'stats') {
+                loadStats();
+            }
         });
     });
 
@@ -217,4 +220,46 @@ async function handleReview(id, action) {
     } catch (error) {
         alert('Error: ' + error.message);
     }
+}
+
+async function loadStats() {
+    try {
+        const response = await fetch('/api/stats');
+        if (!response.ok) {
+            throw new Error('Failed to fetch stats: ' + response.statusText);
+        }
+        const data = await response.json();
+        renderStats(data);
+    } catch (error) {
+        document.getElementById('stat-total').textContent = 'Error';
+    }
+}
+
+function renderStats(data) {
+    document.getElementById('stat-total').textContent = data.total;
+    renderBarChart(data.by_status, document.getElementById('chart-status'));
+    renderBarChart(data.by_type, document.getElementById('chart-type'));
+    renderBarChart(data.by_scope, document.getElementById('chart-scope'));
+}
+
+function renderBarChart(data, container) {
+    if (!data || Object.keys(data).length === 0) {
+        container.innerHTML = '<p>No data</p>';
+        return;
+    }
+
+    const total = Object.values(data).reduce((a, b) => a + b, 0);
+    const html = Object.entries(data).map(([label, count]) => {
+        const pct = total > 0 ? (count / total * 100).toFixed(1) : 0;
+        return `
+        <div class="bar-row">
+            <span class="bar-label">${escapeHtml(label)}</span>
+            <div class="bar-container">
+                <div class="bar" style="width:${pct}%"></div>
+            </div>
+            <span class="bar-value">${count}</span>
+        </div>`;
+    }).join('');
+
+    container.innerHTML = html;
 }
