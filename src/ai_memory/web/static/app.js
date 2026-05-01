@@ -23,6 +23,9 @@ function initTabs() {
             if (tabId === 'stats') {
                 loadStats();
             }
+            if (tabId === 'sources') {
+                loadSources();
+            }
         });
     });
 
@@ -262,4 +265,73 @@ function renderBarChart(data, container) {
     }).join('');
 
     container.innerHTML = html;
+}
+
+async function loadSources() {
+    const container = document.getElementById('sources-list');
+    container.innerHTML = '<p>Loading...</p>';
+
+    try {
+        const response = await fetch('/api/sources');
+        if (!response.ok) {
+            throw new Error('Failed to fetch sources: ' + response.statusText);
+        }
+
+        const data = await response.json();
+        renderSources(data.sources);
+    } catch (error) {
+        container.innerHTML = '<p class="error">Error: ' + error.message + '</p>';
+    }
+}
+
+function renderSources(sources) {
+    const container = document.getElementById('sources-list');
+    const previewContainer = document.getElementById('source-preview-container');
+
+    previewContainer.style.display = 'none';
+
+    if (!sources || sources.length === 0) {
+        container.innerHTML = '<p>No source archives found.</p>';
+        return;
+    }
+
+    const html = '<table class="sources-table"><thead><tr><th>Client</th><th>Name</th><th>Size</th><th>Modified</th></tr></thead><tbody>' +
+        sources.map(s => `
+        <tr class="source-row" onclick="previewSource('${escapeHtml(s.path).replace(/'/g, "\\'")}')">
+            <td>${escapeHtml(s.client)}</td>
+            <td>${escapeHtml(s.name)}</td>
+            <td>${formatSize(s.size)}</td>
+            <td>${formatDate(s.modified)}</td>
+        </tr>`).join('') +
+        '</tbody></table>';
+
+    container.innerHTML = html;
+}
+
+function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+async function previewSource(path) {
+    const previewContainer = document.getElementById('source-preview-container');
+    const previewContent = document.getElementById('source-preview');
+
+    previewContainer.style.display = 'block';
+    previewContent.textContent = 'Loading...';
+
+    try {
+        const encodedPath = encodeURIComponent(path);
+        const response = await fetch('/api/sources/' + encodedPath);
+
+        if (!response.ok) {
+            throw new Error('Failed to fetch source: ' + response.statusText);
+        }
+
+        const data = await response.json();
+        previewContent.textContent = data.content;
+    } catch (error) {
+        previewContent.textContent = 'Error: ' + error.message;
+    }
 }

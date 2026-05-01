@@ -6,6 +6,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from ai_memory.core.models import MemoryCandidate
 from ai_memory.extraction.validator import validate_candidate
 from ai_memory.review.queue import ReviewQueue
@@ -183,5 +187,47 @@ def create_review_routes(queue: ReviewQueue, store: SQLiteMemoryStore) -> APIRou
 
         queue.mark(review_id, "rejected")
         return JSONResponse({"status": "rejected"})
+
+    return router
+
+
+def create_source_routes(raw_dir: Path) -> APIRouter:
+    router = APIRouter(prefix="/api/sources", tags=["sources"])
+
+    @router.get("")
+    async def list_sources() -> JSONResponse:
+        sources = []
+        if not raw_dir.exists():
+            return JSONResponse({"sources": sources})
+
+        tz = ZoneInfo("UTC")
+        for client_dir in sorted(raw_dir.iterdir()):
+            if not client_dir.is_dir():
+                continue
+            client_name = client_dir.name
+            for file_path in sorted(client_dir.iterdir()):
+                if not file_path.is_file():
+                    continue
+                stat = file_path.stat()
+                sources.append({
+                    "name": file_path.name,
+                    "client": client_name,
+                    "path": f"{client_name}/{file_path.name}",
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime, tz=tz).isoformat(),
+                })
+
+        return JSONResponse({"sources": sources})
+
+    @router.get("/{path:path}")
+    async def get_source(path: str) -> JSONResponse:
+        file_path = raw_dir / path
+        if not file_path.exists() or not file_path.is_file():
+            raise HTTPException(status_code=404, detail=f"Source not found: {path}")
+        try:
+            content = file_path.read_text(encoding="utf-8")
+            return JSONResponse({"content": content})
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to read source: {e}")
 
     return router
