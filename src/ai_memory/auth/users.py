@@ -4,7 +4,7 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
-from passlib.context import CryptContext
+import bcrypt
 from sqlalchemy import create_engine, Column, String
 from sqlalchemy.orm import declarative_base, Session
 
@@ -30,19 +30,16 @@ class AuthUser:
     role: str
 
 
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
 def _generate_api_key() -> str:
     return secrets.token_urlsafe(32)
 
 
 def hash_password(password: str) -> str:
-    return _pwd_ctx.hash(password)
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    return _pwd_ctx.verify(password, hashed)
+    return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
 def create_user(db: Session, username: str, password: str, role: str = "read") -> AuthUser:
