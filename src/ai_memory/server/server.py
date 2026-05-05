@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp
@@ -112,7 +112,7 @@ def create_server(home: Path | None = None) -> FastAPI:
             user = verify_credentials(db, username, password)
             if not user:
                 raise HTTPException(status_code=401, detail="Invalid credentials")
-            token = create_token(user.id, user.username, _get_jwt_secret())
+            token = create_token(user.id, user.username, _get_jwt_secret(), role=user.role)
             return JSONResponse({
                 "token": token,
                 "user": {
@@ -131,7 +131,7 @@ def create_server(home: Path | None = None) -> FastAPI:
         with Session(engine) as db:
             try:
                 user = create_user(db, username, password, role="read")
-                token = create_token(user.id, user.username, _get_jwt_secret())
+                token = create_token(user.id, user.username, _get_jwt_secret(), role=user.role)
                 return JSONResponse({
                     "token": token,
                     "user": {
@@ -145,7 +145,10 @@ def create_server(home: Path | None = None) -> FastAPI:
                 raise HTTPException(status_code=400, detail=str(e))
 
     @app.get("/api/auth/me")
-    def me(x_api_key: str | None = None, authorization: str | None = None) -> JSONResponse:
+    def me(
+        x_api_key: str | None = Header(None),
+        authorization: str | None = Header(None),
+    ) -> JSONResponse:
         user = _require_auth(x_api_key, authorization, auth_db_path)
         if not user:
             raise HTTPException(status_code=401, detail="Not authenticated")
@@ -156,7 +159,10 @@ def create_server(home: Path | None = None) -> FastAPI:
         })
 
     @app.get("/api/admin/users")
-    def admin_list_users(x_api_key: str | None = None, authorization: str | None = None) -> JSONResponse:
+    def admin_list_users(
+        x_api_key: str | None = Header(None),
+        authorization: str | None = Header(None),
+    ) -> JSONResponse:
         user = _require_auth(x_api_key, authorization, auth_db_path)
         if not user or user.role != "admin":
             raise HTTPException(status_code=403, detail="Admin required")
@@ -167,7 +173,11 @@ def create_server(home: Path | None = None) -> FastAPI:
             return JSONResponse({"users": list_users(db)})
 
     @app.delete("/api/admin/users/{user_id}")
-    def admin_delete_user(user_id: str, x_api_key: str | None = None, authorization: str | None = None) -> JSONResponse:
+    def admin_delete_user(
+        user_id: str,
+        x_api_key: str | None = Header(None),
+        authorization: str | None = Header(None),
+    ) -> JSONResponse:
         user = _require_auth(x_api_key, authorization, auth_db_path)
         if not user or user.role != "admin":
             raise HTTPException(status_code=403, detail="Admin required")
@@ -181,7 +191,11 @@ def create_server(home: Path | None = None) -> FastAPI:
             return JSONResponse({"status": "deleted"})
 
     @app.post("/api/admin/users/{user_id}/regenerate-key")
-    def admin_regenerate_key(user_id: str, x_api_key: str | None = None, authorization: str | None = None) -> JSONResponse:
+    def admin_regenerate_key(
+        user_id: str,
+        x_api_key: str | None = Header(None),
+        authorization: str | None = Header(None),
+    ) -> JSONResponse:
         user = _require_auth(x_api_key, authorization, auth_db_path)
         if not user or user.role != "admin":
             raise HTTPException(status_code=403, detail="Admin required")
@@ -199,8 +213,8 @@ def create_server(home: Path | None = None) -> FastAPI:
         username: str,
         password: str,
         role: str = "read",
-        x_api_key: str | None = None,
-        authorization: str | None = None,
+        x_api_key: str | None = Header(None),
+        authorization: str | None = Header(None),
     ) -> JSONResponse:
         user = _require_auth(x_api_key, authorization, auth_db_path)
         if not user or user.role != "admin":

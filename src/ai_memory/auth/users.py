@@ -74,9 +74,9 @@ def verify_credentials(db: Session, username: str, password: str) -> AuthUser | 
     return AuthUser(id=user.id, username=user.username, api_key=user.api_key, role=user.role)
 
 
-def list_users(db: Session) -> list[AuthUser]:
+def list_users(db: Session) -> list[dict]:
     users = db.query(User).all()
-    return [AuthUser(id=u.id, username=u.username, api_key=u.api_key[:8] + "***", role=u.role) for u in users]
+    return [{"id": u.id, "username": u.username, "api_key": u.api_key[:8] + "***", "role": u.role} for u in users]
 
 
 def delete_user(db: Session, user_id: str) -> bool:

@@ -3,17 +3,29 @@ from __future__ import annotations
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from ai_memory.core.config import default_config
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.web.routes import create_memory_routes, create_memory_store, create_review_routes, create_source_routes, create_stats_routes
 
 
+class NoCacheMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/static") or request.url.path == "/":
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
+        return response
+
+
 def create_app(home: Path | None = None) -> FastAPI:
     app = FastAPI(title="ai-memory Dashboard")
+    app.add_middleware(NoCacheMiddleware)
 
     if home is not None:
         app.state.home = home

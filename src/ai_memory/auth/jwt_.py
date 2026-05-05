@@ -8,11 +8,12 @@ from jose import JWTError as JoseJWTError, jwt
 ALGORITHM = "HS256"
 
 
-def create_token(user_id: str, username: str, secret: str, expires_hours: int = 24) -> str:
+def create_token(user_id: str, username: str, secret: str, role: str = "read", expires_hours: int = 24) -> str:
     exp = datetime.now(timezone.utc) + timedelta(hours=expires_hours)
     payload = {
         "sub": user_id,
         "username": username,
+        "role": role,
         "exp": exp,
         "jti": secrets.token_urlsafe(16),
     }

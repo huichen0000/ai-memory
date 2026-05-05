@@ -4,15 +4,26 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>ai-memory Dashboard</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
     <h1>ai-memory Dashboard</h1>
+    <div id="login-bar" style="display:none; margin-bottom: 16px;">
+        <input type="text" id="login-username" placeholder="Username">
+        <input type="password" id="login-password" placeholder="Password">
+        <button onclick="login()">Login</button>
+        <span id="login-error" style="color:var(--color-danger); margin-left:8px;"></span>
+    </div>
+    <div id="user-bar" style="display:none; margin-bottom: 16px; text-align:right;">
+        <span id="user-info"></span>
+        <button onclick="logout()" style="margin-left:8px;">Logout</button>
+    </div>
     <div class="tabs">
         <button class="tab-button active" data-tab="memories">Memories</button>
         <button class="tab-button" data-tab="review">Review</button>
         <button class="tab-button" data-tab="stats">Stats</button>
         <button class="tab-button" data-tab="sources">Sources</button>
+        <button class="tab-button" data-tab="users" id="tab-btn-users" style="display:none">Users</button>
     </div>
     <div id="app">
         <div class="tab-content active" id="tab-memories">
@@ -57,13 +68,27 @@
                 </div>
             </div>
         </div>
-        <div class="tab-content" id="tab-sources" style="display:none">
+        <div class="tab-content" id="tab-sources">
             <h2>Source Explorer</h2>
             <div id="sources-list"></div>
             <div id="source-preview-container" style="display:none">
                 <h3>Preview</h3>
                 <pre id="source-preview"></pre>
             </div>
+        </div>
+        <div class="tab-content" id="tab-users">
+            <h2>User Management</h2>
+            <div class="user-form">
+                <input type="text" id="new-username" placeholder="Username">
+                <input type="password" id="new-password" placeholder="Password">
+                <select id="new-role">
+                    <option value="read">Read</option>
+                    <option value="write">Write</option>
+                    <option value="admin">Admin</option>
+                </select>
+                <button onclick="createUser()">Create User</button>
+            </div>
+            <div id="users-list"></div>
         </div>
     </div>
     <div id="editor-modal" class="modal" style="display:none">
@@ -79,6 +104,6 @@
             </div>
         </div>
     </div>
-    <script src="/static/app.js"></script>
+    <script src="/static/app.js?v=2"></script>
 </body>
 </html>
