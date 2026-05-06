@@ -20,6 +20,14 @@ from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
 
+class FakeAdapter:
+    def __init__(self, paths: list[Path]):
+        self.paths = paths
+
+    def discover(self) -> list[Path]:
+        return self.paths
+
+
 def test_parse_clients_all_resolves_built_ins():
     assert parse_clients("all") == BUILT_IN_CLIENTS
 
@@ -190,6 +198,171 @@ def test_history_init_archives_and_reports_missing_extractor(tmp_path: Path):
     assert (home / "raw" / "generic" / "chat.md").read_text(encoding="utf-8") == "User: Use pytest for tests"
 
 
+def test_history_init_rejects_sensitive_include_generic_without_override(tmp_path: Path):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    transcript = tmp_path / "credentials.json"
+    transcript.write_text("User: Use pytest for tests", encoding="utf-8")
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=(),
+            include_generic=(transcript,),
+            review_only=True,
+            auto_write_low_risk=False,
+            limit=None,
+            dry_run=False,
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=None,
+    )
+
+    assert summary.sources_found == 1
+    assert summary.sources_processed == 0
+    assert summary.transcripts_archived == 0
+    assert summary.transcripts_skipped == 1
+    assert "Refusing to archive sensitive path" in summary.errors[0]
+    assert not (home / "raw" / "generic" / transcript.name).exists()
+
+
+def test_history_init_allows_sensitive_include_generic_with_override(tmp_path: Path):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    transcript = tmp_path / "credentials.json"
+    transcript.write_text("User: Use pytest for tests", encoding="utf-8")
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=(),
+            include_generic=(transcript,),
+            review_only=True,
+            auto_write_low_risk=False,
+            limit=None,
+            dry_run=False,
+            allow_sensitive_source=True,
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=None,
+    )
+
+    assert summary.sources_processed == 1
+    assert summary.transcripts_archived == 1
+    assert (home / "raw" / "generic" / transcript.name).exists()
+
+
+def test_history_init_sensitive_override_does_not_apply_to_discovered_clients(tmp_path: Path, monkeypatch):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    transcript = tmp_path / "credentials.json"
+    transcript.write_text("User: Use pytest for tests", encoding="utf-8")
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+    monkeypatch.setattr("ai_memory.history.initializer._adapter_for", lambda client, home: FakeAdapter([transcript]))
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=("claude-code",),
+            include_generic=(),
+            review_only=True,
+            auto_write_low_risk=False,
+            limit=None,
+            dry_run=False,
+            allow_sensitive_source=True,
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=None,
+    )
+
+    assert summary.sources_found == 1
+    assert summary.sources_processed == 0
+    assert summary.transcripts_archived == 0
+    assert summary.transcripts_skipped == 1
+    assert "Refusing to archive sensitive path" in summary.errors[0]
+
+
+def test_history_init_rejects_sensitive_symlink_target_without_override(tmp_path: Path):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    target = tmp_path / ".env"
+    target.write_text("User: Use pytest for tests", encoding="utf-8")
+    transcript = tmp_path / "chat.md"
+    transcript.symlink_to(target)
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=(),
+            include_generic=(transcript,),
+            review_only=True,
+            auto_write_low_risk=False,
+            limit=None,
+            dry_run=False,
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=None,
+    )
+
+    assert summary.sources_found == 1
+    assert summary.sources_processed == 0
+    assert summary.transcripts_archived == 0
+    assert summary.transcripts_skipped == 1
+    assert "Refusing to archive sensitive path" in summary.errors[0]
+    assert not (home / "raw" / "generic" / transcript.name).exists()
+
+
+def test_history_init_dry_run_reports_sensitive_source_skip(tmp_path: Path):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    transcript = tmp_path / "credentials.json"
+    transcript.write_text("User: Use pytest for tests", encoding="utf-8")
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=(),
+            include_generic=(transcript,),
+            review_only=True,
+            auto_write_low_risk=False,
+            limit=None,
+            dry_run=True,
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=None,
+    )
+
+    assert summary.sources_found == 1
+    assert summary.sources_processed == 0
+    assert summary.transcripts_archived == 0
+    assert summary.transcripts_skipped == 1
+    assert "Refusing to archive sensitive path" in summary.errors[0]
+
+
 class StaticExtractor:
     def __init__(self, candidates: list[MemoryCandidate]):
         self.candidates = candidates
@@ -329,6 +502,47 @@ def test_history_init_auto_write_low_risk_uses_existing_policy(tmp_path: Path):
     pending = queue.list_pending()
     assert len(pending) == 1
     assert pending[0].candidate.type == "testing_rule"
+
+
+def test_history_init_auto_write_queues_conflicting_uri(tmp_path: Path):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    transcript = tmp_path / "chat.md"
+    transcript.write_text("User: Use pytest", encoding="utf-8")
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+    store.create_memory(low_risk_candidate(), status="auto_approved", change_reason="existing")
+    conflict = MemoryCandidate(
+        uri=low_risk_candidate().uri,
+        type="project_command",
+        scope="project",
+        content="Use unittest for tests.",
+        summary="Use unittest.",
+        confidence=0.9,
+        risk="low",
+        evidence="historical transcript stated test command",
+    )
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=(),
+            include_generic=(transcript,),
+            review_only=False,
+            auto_write_low_risk=True,
+            limit=None,
+            dry_run=False,
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=StaticExtractor([conflict]),
+    )
+
+    assert summary.auto_written == 0
+    assert summary.review_queued == 1
+    assert "conflicts with existing approved memory" in queue.list_pending()[0].reason
 
 
 def test_cli_history_init_dry_run_outputs_summary(tmp_path: Path, capsys):

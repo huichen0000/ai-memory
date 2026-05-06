@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 from collections.abc import Iterable
 from hashlib import sha1, sha256
+
+from ai_memory.privacy.redactor import redact_secrets
 from pathlib import Path
 from typing import Any
 
@@ -94,9 +96,9 @@ def main() -> int:
 
 def extract_candidates(transcript: dict[str, Any]) -> list[dict[str, Any]]:
     settings = load_settings()
-    mode = setting_value(settings, "mode", "AI_MEMORY_EXTRACTOR_MODE", "auto").strip().lower()
+    mode = setting_value(settings, "mode", "AI_MEMORY_EXTRACTOR_MODE", "heuristic").strip().lower()
     if mode not in {"auto", "llm", "heuristic"}:
-        mode = "auto"
+        mode = "heuristic"
 
     heuristic_candidates = extract_with_heuristics(transcript)
     if mode == "auto" and heuristic_candidates and bool_setting(
@@ -236,17 +238,11 @@ def extract_with_llm(transcript: dict[str, Any], settings: dict[str, Any]) -> li
 
 
 def build_llm_prompt(transcript: dict[str, Any], settings: dict[str, Any]) -> str:
-    text = transcript_plain_text(transcript)
+    text = redact_secrets(transcript_plain_text(transcript))
     max_input_chars = int_setting(settings, "max_input_chars", "AI_MEMORY_LLM_MAX_INPUT_CHARS", DEFAULT_LLM_MAX_INPUT_CHARS)
     if len(text) > max_input_chars:
         text = text[:max_input_chars] + "\n[TRUNCATED]"
-    metadata = {
-        "client": transcript.get("client"),
-        "source_path": transcript.get("source_path"),
-        "repo_id": transcript.get("repo_id"),
-        "branch": transcript.get("branch"),
-        "session_id": transcript.get("session_id"),
-    }
+    metadata = {"client": transcript.get("client")}
     return (
         "Extract durable AI coding memories from the transcript. "
         "Return ONLY a JSON array, no markdown and no prose. "
@@ -538,8 +534,8 @@ def build_candidate(
         "repo_id": None if repo_id == "local" else repo_id,
         "branch": branch,
         "source_client": client,
-        "session_id": session_id,
-        "transcript_ref": source_path or None,
+        "session_id": sha1(session_id.encode("utf-8")).hexdigest()[:16] if session_id else None,
+        "transcript_ref": Path(source_path).name if source_path else None,
     }
 
 

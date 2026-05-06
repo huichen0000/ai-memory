@@ -24,8 +24,13 @@ def route_candidates(
             continue
         decision = route_candidate(candidate, auto_write_confidence)
         if decision.action == "auto_write":
-            store.create_memory(candidate, status="auto_approved", change_reason=decision.reason)
-            counts["auto_approved"] += 1
+            existing = store.get_by_uri(candidate.uri)
+            if existing is None:
+                store.create_memory(candidate, status="auto_approved", change_reason=decision.reason)
+                counts["auto_approved"] += 1
+            elif existing.content != candidate.content:
+                queue.enqueue(candidate, "candidate conflicts with existing approved memory for same URI")
+                counts["queued"] += 1
         elif decision.action == "review":
             queue.enqueue(candidate, decision.reason)
             counts["queued"] += 1

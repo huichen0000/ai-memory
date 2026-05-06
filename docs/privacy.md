@@ -12,22 +12,25 @@
 
 ## Sensitive paths
 
-The first version includes a utility that treats these as sensitive:
+The first version includes a utility that treats common secret-bearing filenames, suffixes, keywords, and credential directories as sensitive, including:
 
 - `.env` and `.env.*`
-- `*.pem`
-- `*.key`
-- `id_rsa`
-- `id_ed25519`
-- `credentials.json`
-- paths under `.ssh` or `.aws`
+- `*.pem` and `*.key`
+- SSH private key names such as `id_rsa`, `id_ed25519`, `id_ecdsa`, and `id_dsa`
+- credential names such as `credentials.json`, `client_secret.json`, `token.json`, and `secrets.json`
+- names containing `secret`, `credential`, `token`, `private_key`, `private-key`, `service-account`, or `service_account`
+- paths under credential directories such as `.ssh`, `.aws`, `.kube`, `.docker`, `.azure`, `.terraform.d`, `.cargo`, `.gradle`, `gcloud`, `gh`, or `hub`
 
-This sensitive-path detection is not enforced by `ai-memory import --archive-only` yet.
+Archive commands reject sensitive source paths by default after checking both the submitted path and resolved symlink target. `--allow-sensitive-source` only applies to explicit generic imports and `history init --include-generic`; sensitive paths discovered from built-in clients are always skipped.
 
-## Raw archive-only import
+## Raw archive redaction
 
-`ai-memory import --client generic --path <file> --archive-only` copies transcript text directly into `raw/generic` under the local memory home. It does not redact the transcript and does not screen the source path for sensitive filenames in this first version. Only use archive-only import with transcripts that are already safe to store locally.
+All archive commands (`import`, `history init`, `capture`) accept `--redact-archive` to apply secret redaction before storing archived transcripts. This replaces bearer tokens, API keys, passwords, private keys, and database credentials with `[REDACTED:...]` placeholders.
 
 ## Review policy
 
 High-impact memory types such as user preferences, security constraints, testing rules, API contracts, and architecture decisions enter the review queue instead of being auto-written.
+
+## Centralized server
+
+When deployed with `ai-memory server`, all data resides on the server. Remote clients authenticate via API key (MCP tools) or JWT token (web dashboard). User accounts are stored in `auth.db` with bcrypt-hashed passwords.

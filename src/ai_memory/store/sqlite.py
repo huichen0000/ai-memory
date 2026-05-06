@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -162,10 +163,97 @@ class SQLiteMemoryStore:
             self._replace_fts(db, record, candidate.tags, candidate.triggers)
         return record
 
+    def append_source(self, memory_id: str, candidate: MemoryCandidate) -> None:
+        now = utc_now_iso()
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown memory id: {memory_id}")
+            existing = self._record_from_row(row)
+            if not _source_candidate_matches(existing, candidate):
+                raise ValueError("source candidate does not match target memory")
+            db.execute(
+                """
+                INSERT INTO memory_sources (
+                    id, memory_id, client, session_id, transcript_ref, evidence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id("src"),
+                    memory_id,
+                    candidate.source_client,
+                    candidate.session_id,
+                    candidate.transcript_ref,
+                    candidate.evidence,
+                    now,
+                ),
+            )
+
     def get_memory(self, memory_id: str) -> MemoryRecord | None:
         with self.connect() as db:
             row = db.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
         return self._record_from_row(row) if row else None
+
+    def get_by_uri(self, uri: str) -> MemoryRecord | None:
+        with self.connect() as db:
+            row = db.execute(
+                """
+                SELECT * FROM memories
+                WHERE uri = ?
+                  AND status IN ('approved', 'auto_approved')
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (uri,),
+            ).fetchone()
+        return self._record_from_row(row) if row else None
+
+    def list_all(self, status_filter: tuple[str, ...] | None = None) -> list[MemoryRecord]:
+        with self.connect() as db:
+            if status_filter:
+                placeholders = ",".join("?" * len(status_filter))
+                rows = db.execute(
+                    f"SELECT * FROM memories WHERE status IN ({placeholders}) ORDER BY updated_at DESC",
+                    status_filter,
+                ).fetchall()
+            else:
+                rows = db.execute("SELECT * FROM memories ORDER BY updated_at DESC").fetchall()
+        return [self._record_from_row(row) for row in rows]
+
+    def get_stats(self) -> dict[str, Any]:
+        with self.connect() as db:
+            total = db.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            by_status = dict(db.execute("SELECT status, COUNT(*) FROM memories GROUP BY status").fetchall())
+            by_type = dict(db.execute("SELECT type, COUNT(*) FROM memories GROUP BY type").fetchall())
+            by_scope = dict(db.execute("SELECT scope, COUNT(*) FROM memories GROUP BY scope").fetchall())
+        return {"total": total, "by_status": by_status, "by_type": by_type, "by_scope": by_scope}
+
+    def list_contextual(self, environment: dict[str, str | None], limit: int) -> list[MemoryRecord]:
+        del limit
+        repo_id = environment.get("repo_id")
+        branch = environment.get("branch")
+        relative_path = environment.get("relative_path")
+        with self.connect() as db:
+            rows = db.execute(
+                """
+                SELECT DISTINCT memories.*
+                FROM memories
+                WHERE memories.status IN ('approved', 'auto_approved')
+                  AND (
+                    memories.scope IN ('global', 'system')
+                    OR (? IS NOT NULL AND memories.repo_id = ?)
+                    OR (
+                        ? IS NOT NULL
+                        AND ? IS NOT NULL
+                        AND memories.repo_id = ?
+                        AND memories.branch = ?
+                    )
+                  )
+                """,
+                (repo_id, repo_id, repo_id, branch, repo_id, branch),
+            ).fetchall()
+        records = [self._record_from_row(row) for row in rows]
+        return [record for record in records if _matches_environment_path(record, relative_path)]
 
     def update_memory(self, memory_id: str, content: str, change_reason: str) -> MemoryRecord:
         now = utc_now_iso()
@@ -255,9 +343,15 @@ class SQLiteMemoryStore:
             (record.id, record.uri, record.content, record.summary, " ".join(tags), " ".join(triggers)),
         )
 
+    def _triggers_for(self, memory_id: str) -> tuple[str, ...]:
+        with self.connect() as db:
+            rows = db.execute("SELECT trigger FROM memory_triggers WHERE memory_id = ?", (memory_id,)).fetchall()
+        return tuple(row["trigger"] for row in rows)
+
     def _record_from_row(self, row: sqlite3.Row) -> MemoryRecord:
+        memory_id = row["id"]
         return MemoryRecord(
-            id=row["id"],
+            id=memory_id,
             uri=row["uri"],
             type=row["type"],
             scope=row["scope"],
@@ -272,4 +366,30 @@ class SQLiteMemoryStore:
             expires_at=row["expires_at"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            triggers=self._triggers_for(memory_id),
         )
+
+
+def _source_candidate_matches(record: MemoryRecord, candidate: MemoryCandidate) -> bool:
+    return (
+        record.uri == candidate.uri
+        and record.type == candidate.type
+        and record.content == candidate.content
+        and record.summary == candidate.summary
+        and record.scope == candidate.scope
+        and record.repo_id == candidate.repo_id
+        and record.branch == candidate.branch
+        and record.path_glob == candidate.path_glob
+    )
+
+
+def _matches_environment_path(record: MemoryRecord, relative_path: str | None) -> bool:
+    if record.scope != "path":
+        return True
+    if relative_path is None or record.path_glob is None:
+        return False
+    if fnmatch.fnmatch(relative_path, record.path_glob):
+        return True
+    if "/**/" in record.path_glob:
+        return fnmatch.fnmatch(relative_path, record.path_glob.replace("/**/", "/"))
+    return False

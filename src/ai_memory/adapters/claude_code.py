@@ -18,7 +18,7 @@ class ClaudeCodeAdapter(GenericTranscriptAdapter):
         projects = self.home / ".claude" / "projects"
         if not projects.exists():
             return []
-        return sorted(projects.rglob("*.jsonl"))
+        return sorted(path for path in projects.rglob("*.jsonl") if not path.is_symlink())
 
     def normalize(self, source: Path) -> NormalizedTranscript:
         messages: list[NormalizedMessage] = []

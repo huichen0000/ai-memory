@@ -5,7 +5,7 @@ Local-first multi-tool memory for AI coding agents.
 ## First-version scope
 
 - SQLite memory store.
-- CLI commands for init, add, search, context, import, review, integrate, and MCP serving.
+- CLI commands for init, add, search, context, import, review, and MCP serving.
 - JSONL review queue.
 - Privacy redaction for common secrets.
 - Generic transcript import.
@@ -34,17 +34,17 @@ ai-memory context --prompt "run tests"
 ## Import a generic transcript
 
 ```bash
-ai-memory import --client generic --path ./chat.md --archive-only
+ai-memory import --client generic --path ./chat.md --archive-only --redact-archive
 ```
 
-Warning: `--archive-only` stores the transcript text directly under `raw/generic` in the local memory home. It does not redact secrets or screen sensitive paths in this first version, so only import transcripts that are safe for local archival.
+Warning: `--archive-only` stores transcript text directly under `raw/generic` in the local memory home. Sensitive source paths are rejected by default and require `--allow-sensitive-source`, but allowed archive contents are still not redacted.
 
 ## Historical initialization
 
 To initialize memory from previous AI-tool transcripts, run:
 
 ```bash
-ai-memory history init --clients all --review-only
+ai-memory history init --clients all --review-only --redact-archive
 ```
 
 This scans supported local clients (`claude-code`, `codex-cli`, and `gemini-cli`), archives discovered transcripts under `~/.ai-memory/raw/<client>/`, and extracts candidate memories when an extractor provider is configured.
@@ -75,7 +75,7 @@ Include generic transcript files or directories:
 ai-memory history init --include-generic ./old-chats --review-only
 ```
 
-Privacy note: raw archives may contain the original transcript text. Redaction and validation protect extracted durable memories, but raw archives are local copies of source transcripts.
+Privacy note: raw archives may contain the original transcript text. Sensitive source paths are rejected by default. `--allow-sensitive-source` only applies to explicit generic imports and `history init --include-generic`; sensitive paths discovered from built-in clients are always skipped. Use `--redact-archive` to redact common secrets (API keys, passwords, bearer tokens, private keys, database credentials) from archived content. Redaction and validation protect extracted durable memories, but raw archives without redaction are local copies of source transcripts.
 
 ## Review queue
 
@@ -85,69 +85,97 @@ ai-memory approve rev_example
 ai-memory reject rev_example
 ```
 
-## Transparent integrations: `integrate`
+Approving a pending review item writes the candidate to SQLite as approved memory. If an approved or auto-approved memory already exists with the same URI and identical content, approval is treated as a duplicate and does not create a second memory. If the URI exists with different content, approval is blocked so the conflict can be reviewed explicitly.
 
-Use `integrate` after initialization and review to connect approved ai-memory records to AI coding tools.
+## Current limitations
 
-Check available integration modes:
+- Claude Code hooks are not installed automatically; generate or copy integration snippets manually.
+- MCP writes are deliberately conservative: untrusted MCP writes are queued for review, server MCP writes are also review-only, and broad scopes (`global`, `system`, `org`, `tool`) cannot be auto-approved.
+- Candidate writes require URI namespace and `scope` to match; this protects scoped retrieval but means malformed historical/external extractor output is discarded or queued instead of silently normalized.
+- Retrieval is deterministic keyword, trigger, path, branch, repo, and scope ranking over SQLite FTS; optional embeddings are not implemented yet.
+- The storage model is SQLite-first and does not implement Nocturne-style graph nodes, aliases, or path caches yet.
 
-```bash
-ai-memory integrate status
-```
+## Suggested roadmap
 
-### Claude Code with ccswitch
+1. Add conflict-aware update commands: compatible updates can create new `memory_versions`, incompatible content can remain pending, and operators can explicitly merge/reject/replace.
+2. Add optional semantic search after deterministic scope, trigger, path, and FTS retrieval are stable.
+3. Strengthen Claude Code, Codex, and Gemini adapters with more complete transcript format parsing.
+4. Add conflict-aware version merge commands for compatible memory updates.
 
-Generate ccswitch-safe Claude Code hook snippets without modifying `settings.json`:
-
-```bash
-ai-memory integrate install claude-code
-```
-
-The generated JSON includes:
-
-- `SessionStart`: loads memory when a Claude Code session starts.
-- `UserPromptSubmit`: reads the submitted prompt from hook stdin and retrieves prompt-specific memory.
-- A command hook that calls `ai-memory context --format hook-json`.
-
-Paste the snippet into the active Claude Code profile/settings managed by ccswitch, or add it through Claude Code's `/hooks` UI.
-
-### Codex CLI
-
-Print integration guidance:
+## CLI commands
 
 ```bash
-ai-memory integrate install codex-cli
+ai-memory init
+ai-memory add
+ai-memory search
+ai-memory context
+ai-memory discover
+ai-memory review
+ai-memory approve
+ai-memory reject
+ai-memory import
+ai-memory history init
+ai-memory capture
+ai-memory wiki
+ai-memory web
+ai-memory server
+ai-memory mcp serve
+ai-memory system init
+ai-memory memory show
+ai-memory memory list
+ai-memory memory update
 ```
 
-Run Codex through `aiwrap` so approved memory is prepended automatically:
+## Combined server (with auth)
+
+For multi-user deployments, use the combined server which includes MCP, web dashboard, and user authentication:
 
 ```bash
-aiwrap codex -- "fix tests"
+ai-memory server --port 8080
 ```
 
-### Gemini CLI
+This starts a single server that serves:
+- **Web dashboard** at `/`
+- **MCP tools** at `/mcp` (with API key or JWT auth)
+- **Auth APIs** at `/api/auth/*`
 
-Print integration guidance:
+### Authentication
+
+**Register a user:**
+```bash
+curl -X POST "http://localhost:8080/api/auth/register?username=alice&password=secret"
+```
+
+**Login:**
+```bash
+curl -X POST "http://localhost:8080/api/auth/login?username=alice&password=secret"
+```
+
+Returns: `{"token": "...", "user": {...}}`
+
+**Use MCP with API key:**
+```bash
+# Set in Claude Code config
+mcp__ai-memory__url=http://localhost:8080/mcp
+mcp__ai-memory__api_key=your-api-key-here
+```
+
+### User management (admin only)
 
 ```bash
-ai-memory integrate install gemini-cli
+# List users
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/admin/users
+
+# Create user
+curl -X POST "http://localhost:8080/api/admin/users?username=bob&password=secret&role=write" \
+  -H "Authorization: Bearer $TOKEN"
+
+# Delete user
+curl -X DELETE "http://localhost:8080/api/admin/users/$USER_ID" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Run Gemini through `aiwrap`:
-
-```bash
-aiwrap gemini -- "review this module"
-```
-
-### Custom memory home
-
-```bash
-ai-memory integrate status --home D:/path/to/.ai-memory
-ai-memory integrate install claude-code --home D:/path/to/.ai-memory
-aiwrap --home D:/path/to/.ai-memory codex -- "fix tests"
-```
-
-## MCP server
+## MCP server (local)
 
 ```bash
 ai-memory mcp serve

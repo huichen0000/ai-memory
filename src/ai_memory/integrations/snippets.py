@@ -16,10 +16,7 @@ class IntegrationStatus:
 
 
 def claude_code_hook_command(home: Path, event: str) -> str:
-    command = f'ai-memory context --home "{home}" --format hook-json --event {event}'
-    if event == "UserPromptSubmit":
-        command += " --stdin-json-prompt"
-    return command
+    return f'ai-memory context --home "{home}" --format hook-json --event {event}'
 
 
 def _claude_command_hook(home: Path, event: str) -> dict[str, object]:
