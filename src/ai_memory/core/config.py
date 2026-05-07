@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
 import yaml
+
+
+DEFAULT_EXTRACTOR_SETTINGS = {
+    "mode": "heuristic",
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "",
+    "model": "",
+    "prefilter": True,
+    "llm_only_if_heuristic_empty": True,
+    "cache": True,
+}
 
 
 @dataclass(frozen=True)
@@ -33,8 +46,8 @@ def default_config(user_home: Path | None = None) -> AppConfig:
         raw_dir=memory_home / "raw",
         log_dir=memory_home / "logs",
         review_queue_path=memory_home / "review-queue.jsonl",
-        extractor_provider=None,
-        extractor_command=None,
+        extractor_provider="command",
+        extractor_command=_default_extractor_command(),
         max_input_chars=60000,
         retrieval_max_items=12,
         retrieval_max_chars=6000,
@@ -74,6 +87,10 @@ def config_to_dict(config: AppConfig) -> dict[str, Any]:
     }
 
 
+def _default_extractor_command() -> list[str]:
+    return [sys.executable, str(Path(__file__).resolve().parents[3] / "scripts" / "extractor.py")]
+
+
 def _config_for_home(home: Path) -> AppConfig:
     return AppConfig(
         home=home,
@@ -81,8 +98,8 @@ def _config_for_home(home: Path) -> AppConfig:
         raw_dir=home / "raw",
         log_dir=home / "logs",
         review_queue_path=home / "review-queue.jsonl",
-        extractor_provider=None,
-        extractor_command=None,
+        extractor_provider="command",
+        extractor_command=_default_extractor_command(),
         max_input_chars=60000,
         retrieval_max_items=12,
         retrieval_max_chars=6000,
@@ -113,6 +130,26 @@ def _ensure_home_artifacts(config: AppConfig) -> None:
     config.log_dir.mkdir(parents=True, exist_ok=True)
     config.review_queue_path.parent.mkdir(parents=True, exist_ok=True)
     config.review_queue_path.touch(exist_ok=True)
+
+
+def write_extractor_settings(
+    home: Path,
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    mode: str | None = None,
+) -> None:
+    settings = dict(DEFAULT_EXTRACTOR_SETTINGS)
+    if base_url is not None:
+        settings["base_url"] = base_url
+    if api_key is not None:
+        settings["api_key"] = api_key
+    if model is not None:
+        settings["model"] = model
+    if mode is not None:
+        settings["mode"] = mode
+    (home / "extractor.json").write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def load_config(home: Path) -> AppConfig:
@@ -150,9 +187,28 @@ def load_config(home: Path) -> AppConfig:
     return config
 
 
-def init_home(home: Path) -> AppConfig:
+def init_home(
+    home: Path,
+    *,
+    extractor_base_url: str | None = None,
+    extractor_api_key: str | None = None,
+    extractor_model: str | None = None,
+    extractor_mode: str | None = None,
+) -> AppConfig:
     config = _config_for_home(home)
     _ensure_home_artifacts(config)
     config_file = config.home / "config.yaml"
     config_file.write_text(yaml.safe_dump(config_to_dict(config), sort_keys=False), encoding="utf-8")
+    extractor_settings_path = config.home / "extractor.json"
+    has_extractor_overrides = any(
+        value is not None for value in (extractor_base_url, extractor_api_key, extractor_model, extractor_mode)
+    )
+    if has_extractor_overrides or not extractor_settings_path.exists():
+        write_extractor_settings(
+            config.home,
+            base_url=extractor_base_url,
+            api_key=extractor_api_key,
+            model=extractor_model,
+            mode=extractor_mode,
+        )
     return config

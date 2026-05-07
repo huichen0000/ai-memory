@@ -41,11 +41,13 @@
             <div id="memories-container">
                 <p>Loading...</p>
             </div>
+            <div id="memories-pagination" class="pagination-controls"></div>
         </div>
         <div class="tab-content" id="tab-review">
             <h2>Review Queue</h2>
             <button id="refresh-review-btn">Refresh</button>
             <div id="review-list"></div>
+            <div id="review-pagination" class="pagination-controls"></div>
         </div>
         <div class="tab-content" id="tab-stats">
             <h2>Statistics</h2>
@@ -70,6 +72,13 @@
         </div>
         <div class="tab-content" id="tab-sources">
             <h2>Source Explorer</h2>
+            <div class="import-command-panel">
+                <h3>Import local history</h3>
+                <p>Run this on the machine that has your Claude/Codex/Gemini history. It discovers local history automatically.</p>
+                <pre id="history-push-command"></pre>
+                <button onclick="copyHistoryPushCommand()">Copy import command</button>
+                <span id="history-push-copy-status"></span>
+            </div>
             <div id="sources-list"></div>
             <div id="source-preview-container" style="display:none">
                 <h3>Preview</h3>

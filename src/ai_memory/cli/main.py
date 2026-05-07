@@ -3,9 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import socket
 import sqlite3
+import urllib.request
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from ai_memory.core.config import AppConfig, init_home, load_config
 from ai_memory.core.models import MemoryCandidate, MemoryRecord
@@ -13,12 +15,15 @@ from ai_memory.core.uri import parse_memory_uri
 from ai_memory.extraction.validator import validate_candidate
 from ai_memory.privacy.redactor import redact_secrets
 from ai_memory.privacy.sensitive_paths import is_sensitive_path
+from ai_memory.server.history_import import MAX_IMPORT_SOURCE_BYTES
 from ai_memory.mcp.tools import memory_context as build_memory_context
 from ai_memory.mcp.tools import memory_search as search_memory
 from ai_memory.retrieval.assembler import hook_json
 from ai_memory.retrieval.environment import detect_environment
 from ai_memory.review.queue import ReviewQueue
 from ai_memory.store.sqlite import SQLiteMemoryStore
+
+HISTORY_PUSH_PROCESS_TIMEOUT_SECONDS = 600
 
 
 def _tokenize(value: str) -> tuple[str, ...]:
@@ -98,6 +103,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     init_parser = subparsers.add_parser("init", help="Initialize local ai-memory storage")
     init_parser.add_argument("--home", type=Path, default=Path.home() / ".ai-memory")
+    init_parser.add_argument("--extractor-base-url", help="OpenAI-compatible extractor base URL")
+    init_parser.add_argument("--extractor-api-key", help="Extractor API key written to local extractor.json")
+    init_parser.add_argument("--extractor-model", help="Extractor model name")
+    init_parser.add_argument("--extractor-mode", choices=("heuristic", "auto", "llm"), help="Extractor mode")
 
     add_parser = subparsers.add_parser("add", help="Add a memory record")
     add_parser.add_argument("uri")
@@ -154,6 +163,16 @@ def build_parser() -> argparse.ArgumentParser:
     history_init.add_argument("--include-generic", type=Path, action="append", default=[])
     history_init.add_argument("--allow-sensitive-source", action="store_true")
     history_init.add_argument("--redact-archive", action="store_true")
+    history_init.add_argument("--owner-username", help="Bind imported memories to this local auth username")
+    history_push = history_subparsers.add_parser("push", help="Push local history transcripts to a remote ai-memory server")
+    history_push.add_argument("--server", required=True, help="Remote ai-memory server URL")
+    history_push.add_argument("--api-key", required=True, help="API key or bearer token for the remote server")
+    history_push.add_argument("--source-home", type=Path, default=Path.home())
+    history_push.add_argument("--clients", default="all")
+    history_push.add_argument("--limit", type=int)
+    history_push.add_argument("--review-only", action="store_true")
+    history_push.add_argument("--auto-write-low-risk", action="store_true")
+    history_push.add_argument("--redact-archive", action="store_true")
 
     mcp_parser = subparsers.add_parser("mcp", help="Run MCP server commands")
     mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
@@ -215,7 +234,13 @@ def run(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "init":
-        config = init_home(args.home)
+        config = init_home(
+            args.home,
+            extractor_base_url=args.extractor_base_url,
+            extractor_api_key=args.extractor_api_key,
+            extractor_model=args.extractor_model,
+            extractor_mode=args.extractor_mode,
+        )
         store = SQLiteMemoryStore(config.store_path)
         store.initialize()
         print(f"Initialized ai-memory at {config.home}")
@@ -376,6 +401,7 @@ def run(argv: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 allow_sensitive_source=args.allow_sensitive_source,
                 redact_archive=args.redact_archive,
+                owner_user_id=_resolve_owner_user_id(args.home, args.owner_username),
             )
         except ValueError as error:
             try:
@@ -406,6 +432,27 @@ def run(argv: Sequence[str] | None = None) -> int:
         )
         _print_history_summary(summary, config.raw_dir, args.dry_run)
         return 0
+
+    if args.command == "history" and args.history_command == "push":
+        from ai_memory.history.initializer import parse_clients
+
+        try:
+            clients = parse_clients(args.clients)
+            return _run_history_push(
+                server_url=args.server,
+                api_key=args.api_key,
+                source_home=args.source_home,
+                clients=clients,
+                limit=args.limit,
+                review_only=args.review_only or not args.auto_write_low_risk,
+                auto_write_low_risk=args.auto_write_low_risk,
+                redact_archive=args.redact_archive,
+            )
+        except ValueError as error:
+            try:
+                parser.error(str(error))
+            except SystemExit as exit_error:
+                return int(exit_error.code)
 
     if args.command == "mcp" and args.mcp_command == "serve":
         from ai_memory.mcp.server import main as mcp_main
@@ -486,6 +533,109 @@ def run(argv: Sequence[str] | None = None) -> int:
 
     parser.error(f"Unknown command: {args.command}")
     return 2
+
+
+def _run_history_push(
+    *,
+    server_url: str,
+    api_key: str,
+    source_home: Path,
+    clients: tuple[str, ...],
+    limit: int | None,
+    review_only: bool,
+    auto_write_low_risk: bool,
+    redact_archive: bool,
+) -> int:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    base_url = server_url.rstrip("/")
+    session = _post_json(
+        f"{base_url}/api/history/import-sessions",
+        {"clients": list(clients), "redact_archive": redact_archive},
+        headers,
+    )
+    session_id = str(session["session_id"])
+    uploaded = 0
+    for client in clients:
+        for source in adapter_for(client, source_home).discover():
+            if limit is not None and uploaded >= limit:
+                break
+            try:
+                resolved_source = source.resolve(strict=True)
+                if is_sensitive_path(source) or is_sensitive_path(resolved_source):
+                    continue
+                if resolved_source.stat().st_size > MAX_IMPORT_SOURCE_BYTES:
+                    continue
+                content = resolved_source.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            _post_json(
+                f"{base_url}/api/history/import-sessions/{session_id}/sources",
+                {
+                    "client": client,
+                    "path": str(source),
+                    "name": source.name,
+                    "content": redact_secrets(content) if redact_archive else content,
+                    "redact_archive": redact_archive,
+                },
+                headers,
+            )
+            uploaded += 1
+        if limit is not None and uploaded >= limit:
+            break
+    try:
+        result = _post_json(
+            f"{base_url}/api/history/import-sessions/{session_id}/process",
+            {"auto_write_low_risk": auto_write_low_risk, "review_only": review_only},
+            headers,
+            timeout=HISTORY_PUSH_PROCESS_TIMEOUT_SECONDS,
+        )
+    except (TimeoutError, socket.timeout):
+        print(f"Sources uploaded: {uploaded}")
+        print(f"Processing request timed out for import session {session_id}.")
+        print("The server may still be processing this import. Refresh the web dashboard to check imported memories.")
+        return 0
+    print(f"Sources uploaded: {uploaded}")
+    summary = result.get("summary", {})
+    for key in ("sources_found", "sources_processed", "candidates_extracted", "review_queued", "auto_written", "discarded"):
+        if key in summary:
+            print(f"{key}: {summary[key]}")
+    return 0
+
+
+def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeout: float = 60) -> dict[str, Any]:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={**headers, "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+
+def _resolve_owner_user_id(home: Path, owner_username: str | None) -> str | None:
+    auth_db_path = home / "auth.db"
+    if not auth_db_path.exists():
+        return None
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    from ai_memory.auth.users import User
+
+    engine = create_engine(f"sqlite:///{auth_db_path}")
+    with Session(engine) as db:
+        if owner_username:
+            user = db.query(User).filter(User.username == owner_username).first()
+            if user is None:
+                raise ValueError(f"Unknown owner username: {owner_username}")
+            return str(user.id)
+        user = db.query(User).filter(User.role == "admin").order_by(User.created_at.asc()).first()
+        if user is None:
+            user = db.query(User).order_by(User.created_at.asc()).first()
+        return str(user.id) if user is not None else None
+
 
 
 def _print_history_summary(summary: object, raw_dir: Path, dry_run: bool) -> None:

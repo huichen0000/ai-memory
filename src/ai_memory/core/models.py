@@ -37,6 +37,7 @@ class MemoryCandidate:
     source_client: str | None = None
     session_id: str | None = None
     transcript_ref: str | None = None
+    owner_user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class MemoryRecord:
     created_at: str
     updated_at: str
     triggers: tuple[str, ...] = field(default_factory=tuple)
+    owner_user_id: str | None = None
 
 
 @dataclass(frozen=True)

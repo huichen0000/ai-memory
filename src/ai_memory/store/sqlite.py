@@ -37,7 +37,8 @@ class SQLiteMemoryStore:
                     path_glob TEXT,
                     expires_at TEXT,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    owner_user_id TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS memory_sources (
@@ -82,6 +83,9 @@ class SQLiteMemoryStore:
                 );
                 """
             )
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(memories)").fetchall()}
+            if "owner_user_id" not in columns:
+                db.execute("ALTER TABLE memories ADD COLUMN owner_user_id TEXT")
 
     def create_memory(
         self,
@@ -107,14 +111,15 @@ class SQLiteMemoryStore:
             expires_at=candidate.expires_at,
             created_at=now,
             updated_at=now,
+            owner_user_id=candidate.owner_user_id,
         )
         with self.connect() as db:
             db.execute(
                 """
                 INSERT INTO memories (
                     id, uri, type, scope, content, summary, status, confidence, risk,
-                    repo_id, branch, path_glob, expires_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    repo_id, branch, path_glob, expires_at, created_at, updated_at, owner_user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -132,6 +137,7 @@ class SQLiteMemoryStore:
                     record.expires_at,
                     record.created_at,
                     record.updated_at,
+                    record.owner_user_id,
                 ),
             )
             db.execute(
@@ -201,7 +207,7 @@ class SQLiteMemoryStore:
                 SELECT * FROM memories
                 WHERE uri = ?
                   AND status IN ('approved', 'auto_approved')
-                ORDER BY updated_at DESC
+                ORDER BY updated_at DESC, id DESC
                 LIMIT 1
                 """,
                 (uri,),
@@ -213,12 +219,42 @@ class SQLiteMemoryStore:
             if status_filter:
                 placeholders = ",".join("?" * len(status_filter))
                 rows = db.execute(
-                    f"SELECT * FROM memories WHERE status IN ({placeholders}) ORDER BY updated_at DESC",
+                    f"SELECT * FROM memories WHERE status IN ({placeholders}) ORDER BY updated_at DESC, id DESC",
                     status_filter,
                 ).fetchall()
             else:
-                rows = db.execute("SELECT * FROM memories ORDER BY updated_at DESC").fetchall()
+                rows = db.execute("SELECT * FROM memories ORDER BY updated_at DESC, id DESC").fetchall()
         return [self._record_from_row(row) for row in rows]
+
+    def list_page(
+        self,
+        *,
+        status_filter: tuple[str, ...] | None = None,
+        type_filter: str | None = None,
+        scope_filter: str | None = None,
+        owner_user_id_filter: str | None = None,
+        limit: int,
+        offset: int = 0,
+    ) -> list[MemoryRecord]:
+        where_sql, params = _memory_filter_sql(status_filter, type_filter, scope_filter, owner_user_id_filter)
+        with self.connect() as db:
+            rows = db.execute(
+                f"SELECT * FROM memories{where_sql} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return [self._record_from_row(row) for row in rows]
+
+    def count_all(
+        self,
+        *,
+        status_filter: tuple[str, ...] | None = None,
+        type_filter: str | None = None,
+        scope_filter: str | None = None,
+        owner_user_id_filter: str | None = None,
+    ) -> int:
+        where_sql, params = _memory_filter_sql(status_filter, type_filter, scope_filter, owner_user_id_filter)
+        with self.connect() as db:
+            return int(db.execute(f"SELECT COUNT(*) FROM memories{where_sql}", params).fetchone()[0])
 
     def get_stats(self) -> dict[str, Any]:
         with self.connect() as db:
@@ -294,20 +330,96 @@ class SQLiteMemoryStore:
             self._replace_fts(db, updated, tags, triggers)
             return updated
 
-    def search(self, query: str, limit: int) -> list[MemoryRecord]:
+    def search(
+        self,
+        query: str,
+        limit: int,
+        offset: int = 0,
+        *,
+        status_filter: tuple[str, ...] | None = None,
+        type_filter: str | None = None,
+        scope_filter: str | None = None,
+        owner_user_id_filter: str | None = None,
+    ) -> list[MemoryRecord]:
+        where_sql, params = _memory_filter_sql(
+            status_filter or ("approved", "auto_approved"), type_filter, scope_filter, owner_user_id_filter
+        )
+        like_pattern = _like_pattern(query)
         with self.connect() as db:
-            rows = db.execute(
-                """
-                SELECT memories.*
-                FROM memory_fts
-                JOIN memories ON memories.id = memory_fts.memory_id
-                WHERE memory_fts MATCH ?
-                  AND memories.status IN ('approved', 'auto_approved')
-                LIMIT ?
-                """,
-                (query, limit),
-            ).fetchall()
+            try:
+                rows = db.execute(
+                    f"""
+                    SELECT *
+                    FROM memories
+                    {where_sql}
+                      AND (
+                        id IN (SELECT memory_id FROM memory_fts WHERE memory_fts MATCH ?)
+                        OR uri LIKE ?
+                        OR content LIKE ?
+                        OR summary LIKE ?
+                      )
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (*params, query, like_pattern, like_pattern, like_pattern, limit, offset),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = db.execute(
+                    f"""
+                    SELECT *
+                    FROM memories
+                    {where_sql}
+                      AND (uri LIKE ? OR content LIKE ? OR summary LIKE ?)
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (*params, like_pattern, like_pattern, like_pattern, limit, offset),
+                ).fetchall()
         return [self._record_from_row(row) for row in rows]
+
+    def count_search(
+        self,
+        query: str,
+        *,
+        status_filter: tuple[str, ...] | None = None,
+        type_filter: str | None = None,
+        scope_filter: str | None = None,
+        owner_user_id_filter: str | None = None,
+    ) -> int:
+        where_sql, params = _memory_filter_sql(
+            status_filter or ("approved", "auto_approved"), type_filter, scope_filter, owner_user_id_filter
+        )
+        like_pattern = _like_pattern(query)
+        with self.connect() as db:
+            try:
+                return int(
+                    db.execute(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM memories
+                        {where_sql}
+                          AND (
+                            id IN (SELECT memory_id FROM memory_fts WHERE memory_fts MATCH ?)
+                            OR uri LIKE ?
+                            OR content LIKE ?
+                            OR summary LIKE ?
+                          )
+                        """,
+                        (*params, query, like_pattern, like_pattern, like_pattern),
+                    ).fetchone()[0]
+                )
+            except sqlite3.OperationalError:
+                return int(
+                    db.execute(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM memories
+                        {where_sql}
+                          AND (uri LIKE ? OR content LIKE ? OR summary LIKE ?)
+                        """,
+                        (*params, like_pattern, like_pattern, like_pattern),
+                    ).fetchone()[0]
+                )
 
     def list_sources(self, memory_id: str) -> list[dict[str, Any]]:
         with self.connect() as db:
@@ -367,7 +479,40 @@ class SQLiteMemoryStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             triggers=self._triggers_for(memory_id),
+            owner_user_id=row["owner_user_id"],
         )
+
+
+def _like_pattern(query: str) -> str:
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+
+def _memory_filter_sql(
+    status_filter: tuple[str, ...] | None,
+    type_filter: str | None,
+    scope_filter: str | None,
+    owner_user_id_filter: str | None = None,
+) -> tuple[str, tuple[str, ...]]:
+    conditions: list[str] = []
+    params: list[str] = []
+    if status_filter:
+        placeholders = ",".join("?" * len(status_filter))
+        conditions.append(f"status IN ({placeholders})")
+        params.extend(status_filter)
+    if type_filter:
+        conditions.append("type = ?")
+        params.append(type_filter)
+    if scope_filter:
+        conditions.append("scope = ?")
+        params.append(scope_filter)
+    if owner_user_id_filter:
+        conditions.append("owner_user_id = ?")
+        params.append(owner_user_id_filter)
+    if not conditions:
+        return "", ()
+    return " WHERE " + " AND ".join(conditions), tuple(params)
 
 
 def _source_candidate_matches(record: MemoryRecord, candidate: MemoryCandidate) -> bool:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -44,6 +44,7 @@ class HistoryInitOptions:
     dry_run: bool = False
     allow_sensitive_source: bool = False
     redact_archive: bool = False
+    owner_user_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.review_only and self.auto_write_low_risk:
@@ -156,6 +157,8 @@ def run_history_init(
             candidates = extractor.extract(transcript)
             candidates_extracted += len(candidates)
             for candidate in candidates:
+                if options.owner_user_id and candidate.owner_user_id is None:
+                    candidate = replace(candidate, owner_user_id=options.owner_user_id)
                 try:
                     validate_candidate(candidate)
                 except ValueError as exc:

@@ -6,6 +6,7 @@ from ai_memory.adapters.claude_code import ClaudeCodeAdapter
 from ai_memory.adapters.codex_cli import CodexCliAdapter
 from ai_memory.adapters.gemini_cli import GeminiCliAdapter
 from ai_memory.cli.main import run as cli_run
+from ai_memory.retrieval.assembler import assemble_context
 from ai_memory.wrappers.aiwrap import build_wrapped_prompt, run as aiwrap_run
 
 
@@ -166,14 +167,14 @@ def test_build_wrapped_prompt_prepends_context():
     assert prompt.endswith("fix tests")
 
 
-def test_aiwrap_run_preserves_client_args_before_wrapped_prompt():
+def test_aiwrap_run_preserves_client_args_before_wrapped_prompt(tmp_path: Path):
     completed = subprocess.CompletedProcess(args=[], returncode=0)
     with patch("ai_memory.wrappers.aiwrap.subprocess.run", return_value=completed) as run_mock:
-        result = aiwrap_run(["claude", "--model", "sonnet", "--", "fix tests"])
+        result = aiwrap_run(["--home", str(tmp_path), "claude", "--model", "sonnet", "--", "fix tests"])
 
     assert result == 0
     run_mock.assert_called_once_with(
-        ["claude", "--model", "sonnet", build_wrapped_prompt("", "fix tests")],
+        ["claude", "--model", "sonnet", build_wrapped_prompt(assemble_context([]), "fix tests")],
         check=False,
     )
 

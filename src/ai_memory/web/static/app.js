@@ -1,4 +1,7 @@
 let currentUser = null;
+let memoriesOffset = 0;
+let reviewOffset = 0;
+const pageSize = 50;
 
 document.addEventListener('DOMContentLoaded', function() {
     initTabs();
@@ -56,6 +59,7 @@ function showLoggedIn() {
     document.getElementById('login-bar').style.display = 'none';
     document.getElementById('user-bar').style.display = 'block';
     document.getElementById('user-info').textContent = currentUser.username + ' (' + currentUser.role + ')';
+    renderHistoryPushCommand();
     if (currentUser.role === 'admin') {
         document.getElementById('tab-btn-users').style.display = '';
     } else {
@@ -97,6 +101,31 @@ function logout() {
     showLogin();
 }
 
+function renderHistoryPushCommand() {
+    const container = document.getElementById('history-push-command');
+    const token = getToken();
+    if (!container || !currentUser || !token) {
+        return;
+    }
+    const server = window.location.origin;
+    container.textContent = `ai-memory history push --server ${server} --api-key ${token} --clients all --auto-write-low-risk --redact-archive`;
+}
+
+async function copyHistoryPushCommand() {
+    const command = document.getElementById('history-push-command').textContent;
+    const status = document.getElementById('history-push-copy-status');
+    if (!command) {
+        status.textContent = 'Login first';
+        return;
+    }
+    try {
+        await navigator.clipboard.writeText(command);
+        status.textContent = 'Copied';
+    } catch (error) {
+        status.textContent = 'Copy failed';
+    }
+}
+
 function initTabs() {
     const tabButtons = document.querySelectorAll('.tab-button');
     const tabContents = document.querySelectorAll('.tab-content');
@@ -126,13 +155,20 @@ function initTabs() {
         });
     });
 
-    document.getElementById('refresh-btn').addEventListener('click', loadMemories);
-    document.getElementById('refresh-review-btn').addEventListener('click', loadReview);
+    document.getElementById('refresh-btn').addEventListener('click', () => loadMemories(0));
+    document.getElementById('filter-status').addEventListener('change', () => loadMemories(0));
+    document.getElementById('search-input').addEventListener('keydown', event => {
+        if (event.key === 'Enter') loadMemories(0);
+    });
+    document.getElementById('refresh-review-btn').addEventListener('click', () => loadReview(0));
 }
 
-async function loadMemories() {
+async function loadMemories(offset = memoriesOffset) {
     const container = document.getElementById('memories-container');
+    const pagination = document.getElementById('memories-pagination');
+    memoriesOffset = Math.max(0, offset);
     container.innerHTML = '<p>Loading...</p>';
+    pagination.innerHTML = '';
 
     try {
         const statusSelect = document.getElementById('filter-status');
@@ -146,7 +182,8 @@ async function loadMemories() {
         const params = new URLSearchParams();
         if (selectedStatuses) params.append('status', selectedStatuses);
         if (query) params.append('q', query);
-        params.append('limit', '50');
+        params.append('limit', String(pageSize));
+        params.append('offset', String(memoriesOffset));
 
         const response = await fetch('/api/memories?' + params.toString(), { headers: authHeaders() });
         if (!response.ok) {
@@ -155,6 +192,7 @@ async function loadMemories() {
 
         const data = await response.json();
         renderMemories(data.memories);
+        renderPagination('memories-pagination', data.pagination, loadMemories);
     } catch (error) {
         container.innerHTML = '<p class="error">Error: ' + error.message + '</p>';
     }
@@ -194,6 +232,35 @@ function renderMemories(memories) {
     }).join('');
 
     container.innerHTML = html;
+}
+
+function renderPagination(containerId, pagination, loadPage) {
+    const container = document.getElementById(containerId);
+    if (!pagination || (!pagination.has_previous && !pagination.has_next && pagination.total <= pagination.limit)) {
+        container.innerHTML = '';
+        return;
+    }
+
+    const start = pagination.total === 0 ? 0 : Math.min(pagination.offset + 1, pagination.total);
+    const end = Math.min(pagination.offset + pagination.limit, pagination.total);
+    const previousOffset = Math.max(0, pagination.offset - pagination.limit);
+    const nextOffset = pagination.offset + pagination.limit;
+    container.innerHTML = '';
+
+    const previousButton = document.createElement('button');
+    previousButton.textContent = 'Previous';
+    previousButton.disabled = !pagination.has_previous;
+    previousButton.addEventListener('click', () => loadPage(previousOffset));
+
+    const status = document.createElement('span');
+    status.textContent = `Showing ${start}-${end} of ${pagination.total}`;
+
+    const nextButton = document.createElement('button');
+    nextButton.textContent = 'Next';
+    nextButton.disabled = !pagination.has_next;
+    nextButton.addEventListener('click', () => loadPage(nextOffset));
+
+    container.append(previousButton, status, nextButton);
 }
 
 function escapeHtml(text) {
@@ -251,18 +318,25 @@ async function saveMemory() {
     }
 }
 
-async function loadReview() {
+async function loadReview(offset = reviewOffset) {
     const container = document.getElementById('review-list');
+    const pagination = document.getElementById('review-pagination');
+    reviewOffset = Math.max(0, offset);
     container.innerHTML = '<p>Loading...</p>';
+    pagination.innerHTML = '';
 
     try {
-        const response = await fetch('/api/review', { headers: authHeaders() });
+        const params = new URLSearchParams();
+        params.append('limit', String(pageSize));
+        params.append('offset', String(reviewOffset));
+        const response = await fetch('/api/review?' + params.toString(), { headers: authHeaders() });
         if (!response.ok) {
             throw new Error('Failed to fetch review items: ' + response.statusText);
         }
 
         const data = await response.json();
         renderReview(data.items);
+        renderPagination('review-pagination', data.pagination, loadReview);
     } catch (error) {
         container.innerHTML = '<p class="error">Error: ' + error.message + '</p>';
     }

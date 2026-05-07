@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import bcrypt
-from sqlalchemy import create_engine, Column, String
+from sqlalchemy import create_engine, Column, String, text
 from sqlalchemy.orm import declarative_base, Session
 
 Base = declarative_base()
@@ -42,7 +42,7 @@ def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
 
-def create_user(db: Session, username: str, password: str, role: str = "read") -> AuthUser:
+def _add_user(db: Session, username: str, password: str, role: str) -> User:
     from ai_memory.core.models import new_id, utc_now_iso
     user = User(
         id=new_id("user"),
@@ -53,9 +53,27 @@ def create_user(db: Session, username: str, password: str, role: str = "read") -
         created_at=utc_now_iso(),
     )
     db.add(user)
+    return user
+
+
+def _auth_user(user: User) -> AuthUser:
+    return AuthUser(id=user.id, username=user.username, api_key=user.api_key, role=user.role)
+
+
+def create_user(db: Session, username: str, password: str, role: str = "read") -> AuthUser:
+    user = _add_user(db, username, password, role)
     db.commit()
     db.refresh(user)
-    return AuthUser(id=user.id, username=user.username, api_key=user.api_key, role=user.role)
+    return _auth_user(user)
+
+
+def register_user(db: Session, username: str, password: str) -> AuthUser:
+    db.execute(text("BEGIN IMMEDIATE"))
+    role = "admin" if db.query(User).count() == 0 else "read"
+    user = _add_user(db, username, password, role)
+    db.commit()
+    db.refresh(user)
+    return _auth_user(user)
 
 
 def verify_api_key(db: Session, api_key: str) -> AuthUser | None:

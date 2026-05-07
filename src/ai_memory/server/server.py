@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager, AsyncExitStack
 import secrets
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.routing import Route
 from starlette.types import ASGIApp
 
 from ai_memory.auth.jwt_ import create_token, verify_token
@@ -16,11 +18,14 @@ from ai_memory.auth.users import (
     init_auth_db,
     list_users,
     regenerate_api_key,
+    register_user,
     verify_api_key,
     verify_credentials,
 )
+from ai_memory.core.config import load_config
 from ai_memory.retrieval.environment import detect_environment
 from ai_memory.review.queue import ReviewQueue
+from ai_memory.server.history_import import create_import_session, process_import_session, store_import_source
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
 
@@ -130,7 +135,7 @@ def create_server(home: Path | None = None) -> FastAPI:
         engine = create_engine(f"sqlite:///{auth_db_path}")
         with Session(engine) as db:
             try:
-                user = create_user(db, username, password, role="read")
+                user = register_user(db, username, password)
                 token = create_token(user.id, user.username, _get_jwt_secret(), role=user.role)
                 return JSONResponse({
                     "token": token,
@@ -234,6 +239,69 @@ def create_server(home: Path | None = None) -> FastAPI:
             except Exception as e:
                 raise HTTPException(status_code=400, detail=str(e))
 
+    @app.post("/api/history/import-sessions")
+    def history_create_import_session(
+        request: dict,
+        x_api_key: str | None = Header(None),
+        authorization: str | None = Header(None),
+    ) -> JSONResponse:
+        user = _require_write(x_api_key, authorization, auth_db_path)
+        try:
+            clients = request.get("clients") or ["claude-code", "codex-cli", "gemini-cli"]
+            session = create_import_session(memory_home, user.id, [str(client) for client in clients])
+            return JSONResponse(session, status_code=201)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/api/history/import-sessions/{session_id}/sources")
+    def history_upload_import_source(
+        session_id: str,
+        request: dict,
+        x_api_key: str | None = Header(None),
+        authorization: str | None = Header(None),
+    ) -> JSONResponse:
+        user = _require_write(x_api_key, authorization, auth_db_path)
+        try:
+            result = store_import_source(
+                memory_home,
+                session_id,
+                user.id,
+                request,
+                redact_archive=bool(request.get("redact_archive", False)),
+            )
+            return JSONResponse(result, status_code=201)
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+    @app.post("/api/history/import-sessions/{session_id}/process")
+    def history_process_import_session(
+        session_id: str,
+        request: dict,
+        x_api_key: str | None = Header(None),
+        authorization: str | None = Header(None),
+    ) -> JSONResponse:
+        user = _require_write(x_api_key, authorization, auth_db_path)
+        auto_write_low_risk = bool(request.get("auto_write_low_risk", False))
+        review_only = bool(request.get("review_only", not auto_write_low_risk))
+        try:
+            summary = process_import_session(
+                home=memory_home,
+                session_id=session_id,
+                owner_user_id=user.id,
+                config=load_config(memory_home),
+                store=SQLiteMemoryStore(memory_home / "memory.db"),
+                queue=ReviewQueue(memory_home / "review-queue.jsonl"),
+                review_only=review_only,
+                auto_write_low_risk=auto_write_low_risk,
+            )
+            return JSONResponse({"summary": summary})
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
     # --- Mount MCP with auth middleware ---
     from mcp.server.fastmcp import FastMCP
 
@@ -245,7 +313,7 @@ def create_server(home: Path | None = None) -> FastAPI:
     def trusted_env(prompt: str) -> dict[str, str | None]:
         return detect_environment(workspace, client="mcp", prompt=prompt)
 
-    mcp = FastMCP("ai-memory")
+    mcp = FastMCP("ai-memory", streamable_http_path="/")
 
     @mcp.tool()
     def memory_search_tool(query: str, limit: int = 10) -> dict:
@@ -282,7 +350,17 @@ def create_server(home: Path | None = None) -> FastAPI:
         return memory_write(store, queue, payload, trusted_env("memory write"), review_only=False)
 
     # Wrap MCP ASGI app with auth middleware
-    mcp_app = mcp.streamable_http_app
+    mcp_app = mcp.streamable_http_app()
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def combined_lifespan(app_: FastAPI):
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(original_lifespan(app_))
+            await stack.enter_async_context(mcp.session_manager.run())
+            yield
+
+    app.router.lifespan_context = combined_lifespan
 
     class AuthMiddleware:
         def __init__(self, app: ASGIApp):
@@ -290,8 +368,7 @@ def create_server(home: Path | None = None) -> FastAPI:
 
         async def __call__(self, scope, receive, send):
             # MCP uses POST to /mcp with JSON-RPC
-            if scope["type"] == "http" and scope.get("path", "").startswith("/mcp"):
-                # Check auth
+            if scope["type"] == "http":
                 headers = dict(scope.get("headers", []))
                 api_key = headers.get(b"x-api-key", b"").decode() or None
                 auth_header = headers.get(b"authorization", b"").decode() or None
@@ -301,9 +378,10 @@ def create_server(home: Path | None = None) -> FastAPI:
                     response = JSONResponse({"error": "Unauthorized"}, status_code=401)
                     await response(scope, receive, send)
                     return
+                scope = {**scope, "path": "/"}
             await self.app(scope, receive, send)
 
-    app.mount("/mcp", AuthMiddleware(mcp_app))
+    app.router.routes.append(Route("/mcp", endpoint=AuthMiddleware(mcp_app)))
 
     # --- Mount existing web dashboard at / ---
     from ai_memory.web.dashboard import create_app as create_web_app

@@ -6,8 +6,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 from ai_memory.core.models import MemoryCandidate
 from ai_memory.extraction.validator import validate_candidate
@@ -30,29 +29,62 @@ def create_memory_routes(store: SQLiteMemoryStore) -> APIRouter:
         type: str | None = Query(None, description="Filter by memory type"),
         scope: str | None = Query(None, description="Filter by scope"),
         q: str | None = Query(None, description="Search query"),
+        owner_user_id: str | None = Query(None, description="Filter by owner user id"),
         limit: int = Query(50, ge=1, le=500, description="Maximum number of results"),
+        offset: int = Query(0, ge=0, description="Number of results to skip"),
     ) -> JSONResponse:
         status_filter: tuple[str, ...] | None = None
         if status:
             status_filter = tuple(s.strip() for s in status.split(",") if s.strip())
 
         try:
+            type_filter = type.strip() if type else None
+            scope_filter = scope.strip() if scope else None
+            owner_user_id_filter = owner_user_id.strip() if owner_user_id else None
             if q:
-                memories = store.search(q, limit)
-                if status_filter:
-                    memories = [m for m in memories if m.status in status_filter]
+                memories = store.search(
+                    q,
+                    limit=limit,
+                    offset=offset,
+                    status_filter=status_filter,
+                    type_filter=type_filter,
+                    scope_filter=scope_filter,
+                    owner_user_id_filter=owner_user_id_filter,
+                )
+                total = store.count_search(
+                    q,
+                    status_filter=status_filter,
+                    type_filter=type_filter,
+                    scope_filter=scope_filter,
+                    owner_user_id_filter=owner_user_id_filter,
+                )
             else:
-                memories = store.list_all(status_filter=status_filter)
-
-            if type_filter := (type.strip() if type else None):
-                memories = [m for m in memories if m.type == type_filter]
-            if scope_filter := (scope.strip() if scope else None):
-                memories = [m for m in memories if m.scope == scope_filter]
-
-            memories = memories[:limit]
+                memories = store.list_page(
+                    status_filter=status_filter,
+                    type_filter=type_filter,
+                    scope_filter=scope_filter,
+                    owner_user_id_filter=owner_user_id_filter,
+                    limit=limit,
+                    offset=offset,
+                )
+                total = store.count_all(
+                    status_filter=status_filter,
+                    type_filter=type_filter,
+                    scope_filter=scope_filter,
+                    owner_user_id_filter=owner_user_id_filter,
+                )
 
             memories_data = [_memory_to_dict(m) for m in memories]
-            return JSONResponse({"memories": memories_data})
+            return JSONResponse({
+                "memories": memories_data,
+                "pagination": {
+                    "limit": limit,
+                    "offset": offset,
+                    "total": total,
+                    "has_next": offset + limit < total,
+                    "has_previous": offset > 0,
+                },
+            })
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -96,6 +128,7 @@ def _memory_to_dict(memory: Any) -> dict[str, Any]:
         "created_at": memory.created_at,
         "updated_at": memory.updated_at,
         "triggers": list(memory.triggers) if memory.triggers else [],
+        "owner_user_id": memory.owner_user_id,
     }
 
 
@@ -118,6 +151,7 @@ def _candidate_to_dict(candidate: MemoryCandidate) -> dict[str, Any]:
         "source_client": candidate.source_client,
         "session_id": candidate.session_id,
         "transcript_ref": candidate.transcript_ref,
+        "owner_user_id": candidate.owner_user_id,
     }
 
 
@@ -146,9 +180,23 @@ def create_review_routes(queue: ReviewQueue, store: SQLiteMemoryStore) -> APIRou
     router = APIRouter(prefix="/api/review", tags=["review"])
 
     @router.get("")
-    async def list_pending() -> JSONResponse:
-        items = queue.list_pending()
-        return JSONResponse({"items": [_review_item_to_dict(item) for item in items]})
+    async def list_pending(
+        limit: int = Query(50, ge=1, le=500, description="Maximum number of review items"),
+        offset: int = Query(0, ge=0, description="Number of review items to skip"),
+    ) -> JSONResponse:
+        all_items = queue.list_pending()
+        items = all_items[offset : offset + limit]
+        total = len(all_items)
+        return JSONResponse({
+            "items": [_review_item_to_dict(item) for item in items],
+            "pagination": {
+                "limit": limit,
+                "offset": offset,
+                "total": total,
+                "has_next": offset + limit < total,
+                "has_previous": offset > 0,
+            },
+        })
 
     @router.post("/{review_id}/approve")
     async def approve_item(review_id: str) -> JSONResponse:
@@ -199,7 +247,7 @@ def create_source_routes(raw_dir: Path) -> APIRouter:
         if not raw_dir.exists():
             return JSONResponse({"sources": sources})
 
-        tz = ZoneInfo("UTC")
+        tz = timezone.utc
         for client_dir in sorted(raw_dir.iterdir()):
             if not client_dir.is_dir():
                 continue

@@ -1,9 +1,14 @@
 import sys
 from pathlib import Path
+from socket import timeout as SocketTimeout
+from urllib.error import HTTPError
 
 import pytest
 import yaml
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
+from ai_memory.auth.users import create_user, init_auth_db
 from ai_memory.cli.main import run as cli_run
 from ai_memory.core.config import config_to_dict, init_home
 from ai_memory.core.models import MemoryCandidate
@@ -17,6 +22,7 @@ from ai_memory.history.initializer import (
     run_history_init,
 )
 from ai_memory.review.queue import ReviewQueue
+from ai_memory.server.history_import import MAX_IMPORT_SOURCE_BYTES
 from ai_memory.store.sqlite import SQLiteMemoryStore
 
 
@@ -469,6 +475,38 @@ def test_history_init_records_extractor_error_and_continues(tmp_path: Path):
     assert all("bad extractor output" in error for error in summary.errors)
 
 
+def test_history_init_auto_write_binds_records_to_owner_user_id(tmp_path: Path):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    transcript = tmp_path / "chat.md"
+    transcript.write_text("User: Use pytest", encoding="utf-8")
+    store = SQLiteMemoryStore(config.store_path)
+    store.initialize()
+    queue = ReviewQueue(config.review_queue_path)
+
+    summary = run_history_init(
+        options=HistoryInitOptions(
+            clients=(),
+            include_generic=(transcript,),
+            review_only=False,
+            auto_write_low_risk=True,
+            limit=None,
+            dry_run=False,
+            owner_user_id="user_admin",
+        ),
+        config=config,
+        source_home=tmp_path,
+        store=store,
+        queue=queue,
+        extractor=StaticExtractor([low_risk_candidate()]),
+    )
+
+    records = store.search("pytest", limit=10)
+    assert summary.auto_written == 1
+    assert len(records) == 1
+    assert records[0].owner_user_id == "user_admin"
+
+
 def test_history_init_auto_write_low_risk_uses_existing_policy(tmp_path: Path):
     home = tmp_path / ".ai-memory"
     config = init_home(home)
@@ -621,6 +659,284 @@ def test_cli_history_init_uses_configured_command_extractor(tmp_path: Path, caps
     assert "Candidates extracted: 1" in output
     assert "Review queued: 1" in output
     assert len(pending) == 1
+
+
+def test_cli_history_init_auto_write_binds_owner_username(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    auth_db = home / "auth.db"
+    init_auth_db(auth_db)
+    engine = create_engine(f"sqlite:///{auth_db}")
+    with Session(engine) as db:
+        user = create_user(db, "admin", "secret", role="admin")
+    config_data = config_to_dict(config)
+    config_data["extractor"] = {
+        "provider": "command",
+        "command": [
+            sys.executable,
+            "-c",
+            (
+                "import json; "
+                "print(json.dumps([{"
+                "'uri': 'project://local/demo/owner', "
+                "'type': 'project_command', "
+                "'scope': 'project', "
+                "'content': 'Use pytest for tests.', "
+                "'summary': 'Use pytest.', "
+                "'confidence': 0.9, "
+                "'risk': 'low', "
+                "'evidence': 'historical transcript'"
+                "}]))"
+            ),
+        ],
+        "max_input_chars": config.max_input_chars,
+    }
+    (home / "config.yaml").write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+    transcript = tmp_path / "chat.md"
+    transcript.write_text("User: Use pytest for tests", encoding="utf-8")
+
+    result = cli_run([
+        "history",
+        "init",
+        "--home",
+        str(home),
+        "--source-home",
+        str(tmp_path),
+        "--clients",
+        "claude-code",
+        "--include-generic",
+        str(transcript),
+        "--auto-write-low-risk",
+        "--owner-username",
+        "admin",
+    ])
+
+    output = capsys.readouterr().out
+    records = SQLiteMemoryStore(config.store_path).search("pytest", limit=10)
+
+    assert result == 0
+    assert "Auto-written: 1" in output
+    assert len(records) == 1
+    assert records[0].owner_user_id == user.id
+
+
+def test_cli_history_init_auto_write_defaults_to_admin_owner(tmp_path: Path, capsys):
+    home = tmp_path / ".ai-memory"
+    config = init_home(home)
+    auth_db = home / "auth.db"
+    init_auth_db(auth_db)
+    engine = create_engine(f"sqlite:///{auth_db}")
+    with Session(engine) as db:
+        user = create_user(db, "admin", "secret", role="admin")
+    config_data = config_to_dict(config)
+    config_data["extractor"] = {
+        "provider": "command",
+        "command": [
+            sys.executable,
+            "-c",
+            (
+                "import json; "
+                "print(json.dumps([{"
+                "'uri': 'project://local/demo/default-owner', "
+                "'type': 'project_command', "
+                "'scope': 'project', "
+                "'content': 'Use pytest default owner.', "
+                "'summary': 'Use pytest.', "
+                "'confidence': 0.9, "
+                "'risk': 'low', "
+                "'evidence': 'historical transcript'"
+                "}]))"
+            ),
+        ],
+        "max_input_chars": config.max_input_chars,
+    }
+    (home / "config.yaml").write_text(yaml.safe_dump(config_data, sort_keys=False), encoding="utf-8")
+    transcript = tmp_path / "chat.md"
+    transcript.write_text("User: Use pytest", encoding="utf-8")
+
+    result = cli_run([
+        "history",
+        "init",
+        "--home",
+        str(home),
+        "--source-home",
+        str(tmp_path),
+        "--clients",
+        "claude-code",
+        "--include-generic",
+        str(transcript),
+        "--auto-write-low-risk",
+    ])
+
+    records = SQLiteMemoryStore(config.store_path).search("pytest", limit=10)
+
+    assert result == 0
+    assert len(records) == 1
+    assert records[0].owner_user_id == user.id
+
+
+def test_cli_history_push_discovers_local_sources_and_uploads_to_server(tmp_path: Path, monkeypatch, capsys):
+    source_home = tmp_path / "source-home"
+    projects = source_home / ".claude" / "projects" / "demo"
+    projects.mkdir(parents=True)
+    transcript = projects / "session.jsonl"
+    transcript.write_text('{"type":"user","message":"Use pytest remotely"}\n', encoding="utf-8")
+    requests: list[tuple[str, dict, dict[str, str]]] = []
+
+    def fake_post_json(url: str, payload: dict, headers: dict[str, str], timeout: float = 60) -> dict:
+        requests.append((url, payload, headers))
+        if url.endswith("/api/history/import-sessions"):
+            return {"session_id": "hist_sess_test"}
+        if url.endswith("/api/history/import-sessions/hist_sess_test/sources"):
+            return {"status": "uploaded"}
+        if url.endswith("/api/history/import-sessions/hist_sess_test/process"):
+            return {"summary": {"sources_found": 1, "auto_written": 1}}
+        raise HTTPError(url, 404, "not found", hdrs=None, fp=None)
+
+    monkeypatch.setattr("ai_memory.cli.main._post_json", fake_post_json)
+
+    result = cli_run([
+        "history",
+        "push",
+        "--server",
+        "https://memory.example.com/",
+        "--api-key",
+        "test-key",
+        "--source-home",
+        str(source_home),
+        "--clients",
+        "claude-code",
+        "--auto-write-low-risk",
+        "--redact-archive",
+    ])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Sources uploaded: 1" in output
+    assert requests[0] == (
+        "https://memory.example.com/api/history/import-sessions",
+        {"clients": ["claude-code"], "redact_archive": True},
+        {"Authorization": "Bearer test-key"},
+    )
+    assert requests[1][1]["client"] == "claude-code"
+    assert requests[1][1]["name"] == "session.jsonl"
+    assert "Use pytest remotely" in requests[1][1]["content"]
+    assert requests[2][1] == {"auto_write_low_risk": True, "review_only": False}
+
+
+def test_cli_history_push_uses_longer_timeout_for_processing(tmp_path: Path, monkeypatch, capsys):
+    source_home = tmp_path / "source-home"
+    projects = source_home / ".claude" / "projects" / "demo"
+    projects.mkdir(parents=True)
+    (projects / "session.jsonl").write_text('{"type":"user","message":"Use pytest remotely"}\n', encoding="utf-8")
+    timeouts: list[tuple[str, float]] = []
+
+    def fake_post_json(url: str, payload: dict, headers: dict[str, str], timeout: float = 60) -> dict:
+        timeouts.append((url, timeout))
+        if url.endswith("/api/history/import-sessions"):
+            return {"session_id": "hist_sess_test"}
+        if url.endswith("/api/history/import-sessions/hist_sess_test/sources"):
+            return {"status": "uploaded"}
+        if url.endswith("/api/history/import-sessions/hist_sess_test/process"):
+            return {"summary": {"sources_found": 1, "auto_written": 1}}
+        raise HTTPError(url, 404, "not found", hdrs=None, fp=None)
+
+    monkeypatch.setattr("ai_memory.cli.main._post_json", fake_post_json)
+
+    result = cli_run([
+        "history",
+        "push",
+        "--server",
+        "https://memory.example.com",
+        "--api-key",
+        "test-key",
+        "--source-home",
+        str(source_home),
+        "--clients",
+        "claude-code",
+        "--auto-write-low-risk",
+    ])
+
+    assert result == 0
+    assert timeouts[-1][0].endswith("/process")
+    assert timeouts[-1][1] > 60
+
+
+def test_cli_history_push_process_timeout_prints_status_without_traceback(tmp_path: Path, monkeypatch, capsys):
+    source_home = tmp_path / "source-home"
+    projects = source_home / ".claude" / "projects" / "demo"
+    projects.mkdir(parents=True)
+    (projects / "session.jsonl").write_text('{"type":"user","message":"Use pytest remotely"}\n', encoding="utf-8")
+
+    def fake_post_json(url: str, payload: dict, headers: dict[str, str], timeout: float = 60) -> dict:
+        if url.endswith("/api/history/import-sessions"):
+            return {"session_id": "hist_sess_test"}
+        if url.endswith("/api/history/import-sessions/hist_sess_test/sources"):
+            return {"status": "uploaded"}
+        if url.endswith("/api/history/import-sessions/hist_sess_test/process"):
+            raise SocketTimeout("timed out")
+        raise HTTPError(url, 404, "not found", hdrs=None, fp=None)
+
+    monkeypatch.setattr("ai_memory.cli.main._post_json", fake_post_json)
+
+    result = cli_run([
+        "history",
+        "push",
+        "--server",
+        "https://memory.example.com",
+        "--api-key",
+        "test-key",
+        "--source-home",
+        str(source_home),
+        "--clients",
+        "claude-code",
+        "--auto-write-low-risk",
+    ])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Sources uploaded: 1" in output
+    assert "Processing request timed out" in output
+    assert "hist_sess_test" in output
+
+
+def test_cli_history_push_skips_sources_larger_than_server_limit(tmp_path: Path, monkeypatch, capsys):
+    source_home = tmp_path / "source-home"
+    projects = source_home / ".claude" / "projects" / "demo"
+    projects.mkdir(parents=True)
+    (projects / "large.jsonl").write_text("x" * (MAX_IMPORT_SOURCE_BYTES + 1), encoding="utf-8")
+    uploaded_payloads: list[dict] = []
+
+    def fake_post_json(url: str, payload: dict, headers: dict[str, str], timeout: float = 60) -> dict:
+        if url.endswith("/api/history/import-sessions"):
+            return {"session_id": "hist_sess_test"}
+        if url.endswith("/api/history/import-sessions/hist_sess_test/sources"):
+            uploaded_payloads.append(payload)
+            return {"status": "uploaded"}
+        if url.endswith("/api/history/import-sessions/hist_sess_test/process"):
+            return {"summary": {"sources_found": 0, "auto_written": 0}}
+        raise HTTPError(url, 404, "not found", hdrs=None, fp=None)
+
+    monkeypatch.setattr("ai_memory.cli.main._post_json", fake_post_json)
+
+    result = cli_run([
+        "history",
+        "push",
+        "--server",
+        "https://memory.example.com",
+        "--api-key",
+        "test-key",
+        "--source-home",
+        str(source_home),
+        "--clients",
+        "claude-code",
+        "--auto-write-low-risk",
+    ])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "Sources uploaded: 0" in output
+    assert uploaded_payloads == []
 
 
 def test_cli_history_init_rejects_invalid_client(tmp_path: Path, capsys):

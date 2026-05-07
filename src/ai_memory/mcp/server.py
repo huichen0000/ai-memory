@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from io import TextIOWrapper
 from pathlib import Path
+import sys
 from typing import Any
 
+import anyio
 from ai_memory.retrieval.environment import detect_environment
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.stdio import stdio_server
 
 from ai_memory.mcp.tools import memory_context, memory_read, memory_search, memory_write
 from ai_memory.review.queue import ReviewQueue
@@ -54,5 +58,33 @@ def build_server(home: Path | None = None) -> FastMCP:
     return server
 
 
+class _NonBlankAsyncTextReader:
+    def __init__(self, wrapped: anyio.AsyncFile[str]) -> None:
+        self._wrapped = wrapped
+
+    def __aiter__(self) -> "_NonBlankAsyncTextReader":
+        return self
+
+    async def __anext__(self) -> str:
+        while True:
+            line = await self._wrapped.readline()
+            if line == "":
+                raise StopAsyncIteration
+            if line.strip():
+                return line
+
+
+async def _run_stdio_async(home: Path | None = None) -> None:
+    stdin = anyio.wrap_file(TextIOWrapper(sys.stdin.buffer, encoding="utf-8", errors="replace"))
+    stdout = anyio.wrap_file(TextIOWrapper(sys.stdout.buffer, encoding="utf-8"))
+    async with stdio_server(stdin=_NonBlankAsyncTextReader(stdin), stdout=stdout) as (read_stream, write_stream):
+        mcp = build_server(home)
+        await mcp._mcp_server.run(  # noqa: SLF001
+            read_stream,
+            write_stream,
+            mcp._mcp_server.create_initialization_options(),  # noqa: SLF001
+        )
+
+
 def main() -> None:
-    build_server().run()
+    anyio.run(_run_stdio_async)
